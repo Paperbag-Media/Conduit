@@ -18,7 +18,7 @@
  */
 import type { ChatCommandRecord } from '@conduit/database';
 import type { Logger } from '@conduit/logger';
-import { PLATFORM_RULES, renderCommand, type CommandRun, type KickDefaultCommandDefinition } from '@conduit/shared';
+import { PLATFORM_RULES, renderCommand, type ChatDefaultCommandDefinition, type CommandRun } from '@conduit/shared';
 import type { CommandVariableService } from '../community/command-variable-service';
 import { deniedMessage, chatAllows, kickRoles } from '../community/command-access';
 import type { CustomCommandService } from '../community/custom-command-service';
@@ -117,7 +117,7 @@ export class KickCommandService {
   }
 
   /** A default command: the same guards, permission check (silent when refused) and queue as custom commands. */
-  private onDefault(d: KickDefaultCommandDefinition, m: KickChatMessage, args: string): void {
+  private onDefault(d: ChatDefaultCommandDefinition, m: KickChatMessage, args: string): void {
     const defaults = this.o.defaults!;
     if (!this.notFromChatbot({ message: m }).allow) return;
     const roles = kickRoles({ userId: m.senderUserId, badgeTypes: m.badgeTypes }, m.broadcasterUserId);

@@ -2,9 +2,9 @@
  * Giveaways: contracts shared by the backend and the dashboard.
  *
  * Lifecycle: draft → open (accepting entries) → closed (entries closed) → drawn (winners picked), or cancelled from any
- * state before drawing. At most one giveaway is open at a time, so the entry methods (!enter on Kick, 🎉 on
- * Discord) always mean the same giveaway. Entries are unique per platform and platform user id; the same person on
- * Kick and Discord counts as two entrants (accounts aren't linked across platforms).
+ * state before drawing. At most one giveaway is open at a time, so the entry methods (!enter on Kick and Twitch, the
+ * button on Discord) always mean the same giveaway. Entries are unique per platform and platform user id; the same
+ * person on two platforms counts as two entrants (accounts aren't linked across platforms).
  */
 import { z } from 'zod';
 import { KICK_CHAT_MAX_BYTES, KICK_CHAT_MAX_CHARS } from '../kick/kick-setup';
@@ -12,8 +12,10 @@ import { KICK_CHAT_MAX_BYTES, KICK_CHAT_MAX_CHARS } from '../kick/kick-setup';
 export const GIVEAWAY_STATUSES = ['draft', 'open', 'closed', 'drawn', 'cancelled'] as const;
 export type GiveawayStatus = (typeof GIVEAWAY_STATUSES)[number];
 
-export const GIVEAWAY_PLATFORMS = ['kick', 'discord'] as const;
+export const GIVEAWAY_PLATFORMS = ['kick', 'twitch', 'discord'] as const;
 export type GiveawayPlatform = (typeof GIVEAWAY_PLATFORMS)[number];
+/** The platforms entered from chat with !enter, where the chatbot posts the giveaway's messages. */
+export type GiveawayChatPlatform = Exclude<GiveawayPlatform, 'discord'>;
 
 export const GIVEAWAY_PRIZE_MAX = 100;
 export const GIVEAWAY_DESCRIPTION_MAX = 500;
@@ -22,8 +24,8 @@ export const GIVEAWAY_WINNERS_MAX = 50;
 export const GIVEAWAY_DURATION_MAX_MINUTES = 7 * 24 * 60;
 export const GIVEAWAY_REASON_MAX = 200;
 
-/** The Kick entry command (built in; custom Kick commands can't use it). Discord entries are 🎉 reactions only. */
-export const GIVEAWAY_ENTER = { kick: '!enter' } as const;
+/** The chat entry command (built in; custom commands can't use it). Discord entries are the embed's button only. */
+export const GIVEAWAY_ENTER = { kick: '!enter', twitch: '!enter' } as const;
 
 const noControlChars = (s: string) => !/[\u0000-\u001f\u007f]/.test(s);
 
@@ -83,7 +85,7 @@ export const DISCORD_BUTTON_REPLIES = {
 
 /**
  * Ticket rule (documented in docs/SETUP.md#giveaways): every entrant has 1 base ticket; each accepted Kick reward
- * redemption adds the reward's bonus tickets; a verified active Kick subscriber's total is multiplied:
+ * redemption adds the reward's bonus tickets; a verified active Kick or Twitch subscriber's total is multiplied:
  *   weight = (1 + bonus tickets) × (subscriber ? multiplier : 1).
  * Example: 2 bonus tickets, 2× multiplier → (1 + 2) × 2 = 6 tickets.
  */
@@ -121,15 +123,15 @@ export const createGiveawaySchema = z
     discordChannel: discordChannelSchema.default(null),
     /** Optional Kick Channel Points reward for bonus tickets. */
     kickReward: kickRewardSchema.default(null),
-    /** Ticket multiplier for verified active Kick subscribers (1 = off). */
+    /** Ticket multiplier for verified active Kick and Twitch subscribers (1 = off). */
     subscriberMultiplier: multiplierSchema.default(1),
   })
   .strict()
   .superRefine((g, ctx) => {
     if (g.kickReward && !g.platforms.includes('kick'))
       ctx.addIssue({ code: 'custom', path: ['kickReward'], message: 'Bonus tickets need Kick entry' });
-    if (g.subscriberMultiplier > 1 && !g.platforms.includes('kick'))
-      ctx.addIssue({ code: 'custom', path: ['subscriberMultiplier'], message: 'The subscriber multiplier needs Kick entry' });
+    if (g.subscriberMultiplier > 1 && !g.platforms.includes('kick') && !g.platforms.includes('twitch'))
+      ctx.addIssue({ code: 'custom', path: ['subscriberMultiplier'], message: 'The subscriber multiplier needs Kick or Twitch entry' });
   });
 export type CreateGiveawayInput = z.output<typeof createGiveawaySchema>;
 
@@ -247,13 +249,13 @@ export interface GiveawayView {
   /** Every winner ever selected, current and replaced, by place then selection time. */
   winners: GiveawayWinnerView[];
   draws: GiveawayDrawView[];
-  /** The latest Kick chat announcement. */
+  /** The latest chat announcement (Kick and Twitch). */
   announcement: GiveawayAnnouncementView | null;
   /** The Discord embed announcement (null: no channel chosen). */
   discord: GiveawayDiscordView | null;
   /** Total tickets across entries (private: dashboard only; never shown publicly). */
   ticketCount: number;
-  /** Ticket multiplier for verified active Kick subscribers (1 = off), and how many entrants were verified. */
+  /** Ticket multiplier for verified active subscribers (1 = off), and how many entrants were verified. */
   subscriberMultiplier: number;
   verifiedSubscribers: number;
   /** The Kick Channel Points bonus-ticket reward (null: none). */
@@ -277,7 +279,7 @@ export interface GiveawaysState {
   discordChannelDefault: DiscordChannelRef;
   /** Whether Kick Channel Points bonus tickets can be used now, and why not. */
   kickRewards: { available: boolean; problem: string | null };
-  /** The Kick chat messages as they will be posted (saved text, or the default), before variables are filled in. */
+  /** The chat messages as they will be posted (saved text, or the default), before variables are filled in. */
   kickMessages: KickGiveawayMessages;
   /** Giveaways cancelled before cancellation deleted them (kept in the database, not shown). */
   hiddenCancelled: number;
@@ -308,10 +310,10 @@ export type EntryResult =
   | { outcome: 'platform_not_allowed'; prize: string; platforms: GiveawayPlatform[] }
   | { outcome: 'not_eligible'; prize: string; reason: string };
 
-// ── Kick chat messages (editable) ────────────────────────────────────────────
+// ── Chat messages (editable) ─────────────────────────────────────────────────
 
 /**
- * The giveaway messages the chatbot posts in Kick chat. Each one is a template the host can edit on the Giveaways page
+ * The giveaway messages the chatbot posts in Kick and Twitch chat (the same text in both). Each one is a template the host can edit on the Giveaways page
  * before anything is sent; what is saved is exactly what is posted, with its variables filled in. The variables are
  * public facts only (prize, names, how to enter, timing): there is deliberately no ticket, entry-count or odds variable.
  */
@@ -348,7 +350,7 @@ export const KICK_GIVEAWAY_MESSAGES: Record<
     when: `Posted when someone enters with ${GIVEAWAY_ENTER.kick}.`,
     default: '{user} has entered the giveaway!',
     variables: {
-      user: { description: 'The viewer’s Kick name', example: 'viewer123' },
+      user: { description: 'The viewer’s name', example: 'viewer123' },
       prize: { description: 'The prize', example: 'Steam gift card' },
     },
   },
@@ -364,7 +366,7 @@ export const KICK_GIVEAWAY_MESSAGES: Record<
     default: '🏆 {winner_label} of {prize}: {winners}. Congratulations!',
     variables: {
       prize: { description: 'The prize', example: 'Steam gift card' },
-      winners: { description: 'The winners (Kick winners as @name, Discord winners as “name (Discord)”)', example: '@viewer123, fan (Discord)' },
+      winners: { description: 'The winners (chat winners as @name, Discord winners as “name (Discord)”)', example: '@viewer123, fan (Discord)' },
       winner_label: { description: '“Winner” or “Winners”', example: 'Winners' },
     },
   },

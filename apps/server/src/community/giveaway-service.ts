@@ -1,7 +1,7 @@
 /**
- * Giveaways: lifecycle, entries, tickets, weighted winner drawing and announcements. Shared by both platforms; the
- * platform parts are thin: Kick entries come from the verified chat feed (!enter, handled here) and bonus tickets from
- * verified Channel Points reward redemptions; Discord entries only from the Enter Giveaway button on the giveaway's
+ * Giveaways: lifecycle, entries, tickets, weighted winner drawing and announcements. Shared by every platform; the
+ * platform parts are thin: Kick and Twitch entries come from the verified chat feed (!enter, handled here), Kick bonus
+ * tickets from verified Channel Points reward redemptions; Discord entries only from the Enter Giveaway button on the giveaway's
  * embed (button interactions, onDiscordButton; entering is one-way), answered privately. Management happens only through
  * the local API.
  *
@@ -10,9 +10,9 @@
  * half-started giveaway never stays active. End closes entries (also automatically at the end time), Draw picks the
  * winners, Redraw replaces one. Cancel deletes the giveaway and everything that belongs to it.
  *
- * Tickets (see shared/giveaways.ts): weight = (1 + bonus tickets from accepted redemptions) × (verified active Kick
+ * Tickets (see shared/giveaways.ts): weight = (1 + bonus tickets from accepted redemptions) × (verified active
  * subscriber ? multiplier : 1). Ticket counts and odds are private: they are shown only in the local dashboard, never
- * in any public Kick message or Discord embed.
+ * in any public chat message or Discord embed.
  *
  * Reliability:
  * - The database is the authority. At most one giveaway is open (partial unique index); entries are unique per
@@ -59,6 +59,7 @@ import {
   type DiscordChannelsState,
   type EntryResult,
   type GiveawayAnnouncementView,
+  type GiveawayChatPlatform,
   type GiveawayPlatform,
   type GiveawaysState,
   type GiveawayView,
@@ -71,10 +72,10 @@ import type { IncomingButton } from '../discord/discord-bot';
 import type { KickRedemption, KickRewardInput } from '../kick/kick-chat-api';
 import { parseInput } from '../validation';
 import { giveawayMessage, parseGiveawayButtonId, type DiscordGiveaways } from '../discord/discord-giveaways';
-import type { KickChatMessage, KickRedemptionEvent, KickSendOutcome } from '../kick/kick-chat-service';
+import type { KickRedemptionEvent } from '../kick/kick-chat-service';
 
 type EntrySource = NonNullable<GiveawayEntryRecord['source']>;
-/** Kick "{username} has entered the giveaway!" messages waiting at most; beyond this, new ones are skipped (bursts). */
+/** "{username} has entered the giveaway!" chat messages waiting at most; beyond this, new ones are skipped (bursts). */
 const MAX_PENDING_ENTRY_ANNOUNCEMENTS = 10;
 /** Button interactions remembered, so a duplicated event is answered once. */
 const REMEMBERED_INTERACTIONS = 1000;
@@ -89,7 +90,7 @@ const REWARD_POLL_MS = 30_000;
 const SETTLED_ON_KICK = new Set(['NOT_PENDING', 'NOT_FOUND', 'NOT_OWNED']);
 /** An automatic close is announced only if noticed this soon after the end time (not after a long downtime). */
 const CLOSE_ANNOUNCE_WINDOW_MS = 60_000;
-/** "Entries are closed" in Kick chat at most this often, and only this soon after a giveaway closed. */
+/** "Entries are closed" in each chat at most this often, and only this soon after a giveaway closed. */
 const CLOSED_REPLY_COOLDOWN_MS = 60_000;
 const CLOSED_REPLY_WINDOW_MS = 30 * 60_000;
 const MAX_SPACING_WAIT_MS = 10_000;
@@ -106,15 +107,25 @@ export interface GiveawayKickRewards {
   decideRedemptions(decision: 'accept' | 'reject', ids: string[]): Promise<Array<{ id: string; reason: string }>>;
 }
 
-/** The parts of KickChatService giveaways use (narrow, so tests can substitute it). */
-export interface GiveawayKickChat {
-  onMessage(listener: (m: KickChatMessage) => void): () => void;
-  sendResult(content: string): Promise<KickSendOutcome>;
+/** A chat message, as Kick's and Twitch's chat services deliver it. */
+export interface GiveawayChatMessage {
+  messageId: string;
+  content: string;
+  senderUserId: string;
+  senderUsername: string;
+  broadcasterUserId: string;
+  badgeTypes: string[];
+}
+
+/** The parts of KickChatService and TwitchChatService giveaways use (narrow, so tests can substitute them). */
+export interface GiveawayChat {
+  onMessage(listener: (m: GiveawayChatMessage) => void): () => void;
+  sendResult(content: string): Promise<{ ok: true } | { ok: false; outcome: 'failed' | 'unconfirmed'; message: string; locallyThrottled: boolean }>;
   msUntilNextSend(): number;
   chatbotIdentity(): { userId: string | null; isMainAccount: boolean };
   /** Whether chat messages can be posted right now, and why not. */
   sendReadiness(): { ready: boolean; problem: string | null };
-  /** Whether entries can arrive (the webhook subscription is active). */
+  /** Whether entries can arrive (the chat subscription is active). */
   receiving(): boolean;
 }
 
@@ -122,7 +133,9 @@ export interface GiveawayServiceOptions {
   db: Database;
   now: () => Date;
   logger: Logger;
-  kick: GiveawayKickChat;
+  kick: GiveawayChat;
+  /** Twitch chat (absent: no Twitch entries, e.g. in unit tests of the core). */
+  twitch?: GiveawayChat;
   /** Kick Channel Points rewards (absent: bonus tickets unavailable, e.g. in unit tests of the core). */
   kickRewards?: GiveawayKickRewards;
   /** Whether the Discord bot is connected (its buttons respond), and why not. */
@@ -158,7 +171,7 @@ export class GiveawayService {
   private readonly seen = new Set<string>();
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly randomInt: (max: number) => number;
-  /** Kick chat messages are posted one at a time, in order. */
+  /** Chat messages are posted one at a time, in order. */
   private announcing: Promise<void> = Promise.resolve();
   /** Discord posts and edits run one at a time, in order. */
   private discordWork: Promise<void> = Promise.resolve();
@@ -167,7 +180,7 @@ export class GiveawayService {
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
   private readonly seenInteractions = new Set<string>();
   private pendingEntryAnnouncements = 0;
-  private lastClosedReplyAt = 0;
+  private readonly lastClosedReplyAt: Record<GiveawayChatPlatform, number> = { kick: 0, twitch: 0 };
   private readonly unsubscribe: Array<() => void> = [];
 
   private readonly lifecycleListeners = new Set<(e: GiveawayLifecycleEvent) => void>();
@@ -184,8 +197,8 @@ export class GiveawayService {
       giveawayId: g.id,
       prize: g.prize,
       winnerCount: g.winnerCount,
-      platforms: [...(g.allowKick ? (['kick'] as const) : []), ...(g.allowDiscord ? (['discord'] as const) : [])],
-      winners: winners.map(entrantLabel),
+      platforms: platformsOf(g),
+      winners: winners.map((w) => entrantLabel(w, g)),
     };
     for (const listener of this.lifecycleListeners) {
       try {
@@ -199,7 +212,8 @@ export class GiveawayService {
   constructor(private readonly o: GiveawayServiceOptions) {
     this.sleep = o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.randomInt = o.randomInt ?? ((max) => crypto.randomInt(max));
-    this.unsubscribe.push(o.kick.onMessage((m) => this.onKickMessage(m)));
+    this.unsubscribe.push(o.kick.onMessage((m) => this.onChatMessage('kick', m)));
+    if (o.twitch) this.unsubscribe.push(o.twitch.onMessage((m) => this.onChatMessage('twitch', m)));
     if (o.kickRewards) this.unsubscribe.push(o.kickRewards.onRedemption((r) => this.onKickRedemption(r)));
   }
 
@@ -227,7 +241,7 @@ export class GiveawayService {
     await this.idle();
   }
 
-  /** Resolves when queued work (Kick chat, Discord, Kick rewards) has finished (tests, shutdown). */
+  /** Resolves when queued work (chat, Discord, Kick rewards) has finished (tests, shutdown). */
   async idle(): Promise<void> {
     for (;;) {
       const kick = this.announcing;
@@ -244,28 +258,19 @@ export class GiveawayService {
     this.closeOverdue();
     const counts = new Map<string, Record<GiveawayPlatform, number>>();
     for (const c of giveawaysRepo.entryCounts(this.o.db)) {
-      const entry = counts.get(c.giveawayId) ?? { kick: 0, discord: 0 };
+      const entry = counts.get(c.giveawayId) ?? noEntries();
       entry[c.platform] = c.n;
       counts.set(c.giveawayId, entry);
     }
-    const kickSend = this.o.kick.sendReadiness();
-    const receiving = this.o.kick.receiving();
     const discord = await this.o.discordReadiness().catch(() => ({ ready: false, note: 'Discord status is unavailable.' }));
     const all = giveawaysRepo.list(this.o.db);
     const rewards = this.o.kickRewards?.rewardsAccess() ?? { ok: false, problem: 'Kick Channel Points aren’t available.' };
     return {
       // Cancelled giveaways from before cancelling deleted them aren't shown.
-      giveaways: all.filter((g) => g.status !== 'cancelled').map((g) => this.view(g, counts.get(g.id) ?? { kick: 0, discord: 0 })),
+      giveaways: all.filter((g) => g.status !== 'cancelled').map((g) => this.view(g, counts.get(g.id) ?? noEntries())),
       entry: {
-        kick: {
-          command: GIVEAWAY_ENTER.kick,
-          ready: receiving,
-          note: receiving
-            ? kickSend.ready
-              ? null
-              : `Entries work, but chat messages can't be posted: ${kickSend.problem ?? 'the chatbot account can’t send messages.'}`
-            : 'Kick entries need Kick chat to be connected (Dashboard → Kick → Manage → 4. Live chat).',
-        },
+        kick: this.chatEntry('kick', 'Kick entries need Kick chat to be connected (Dashboard → Kick → Manage → 4. Live chat).'),
+        twitch: this.chatEntry('twitch', 'Twitch entries need Twitch chat to be connected (Dashboard → Twitch → Manage → Live Chat).'),
         discord: { command: `${GIVEAWAY_BUTTONS.enter.emoji} ${GIVEAWAY_BUTTONS.enter.label} button`, ready: discord.ready, note: discord.note },
       },
       discordChannelDefault: this.defaultChannel(),
@@ -275,9 +280,20 @@ export class GiveawayService {
     };
   }
 
-  // ── Kick chat messages (editable) ──
+  private chatEntry(platform: GiveawayChatPlatform, notConnected: string): GiveawaysState['entry'][GiveawayChatPlatform] {
+    const chat = this.o[platform];
+    const send = chat?.sendReadiness();
+    const ready = chat?.receiving() ?? false;
+    return {
+      command: GIVEAWAY_ENTER[platform],
+      ready,
+      note: !ready ? notConnected : send?.ready ? null : `Entries work, but chat messages can't be posted: ${send?.problem ?? 'the chatbot account can’t send messages.'}`,
+    };
+  }
 
-  /** The Kick messages as they will be posted: each saved (still valid) text, or its default. */
+  // ── Chat messages (editable) ──
+
+  /** The chat messages as they will be posted: each saved (still valid) text, or its default. */
   kickMessages(): KickGiveawayMessages {
     const saved = this.savedKickMessages();
     const out = { ...KICK_GIVEAWAY_MESSAGE_DEFAULTS };
@@ -289,7 +305,7 @@ export class GiveawayService {
   }
 
   /**
-   * Saves edited Kick messages (null restores a default). Everything is checked before anything is saved, and nothing is
+   * Saves edited chat messages (null restores a default). Everything is checked before anything is saved, and nothing is
    * sent: the saved text is exactly what is posted later, with its variables filled in.
    */
   async setKickMessages(raw: unknown): Promise<GiveawaysState> {
@@ -349,6 +365,8 @@ export class GiveawayService {
     let channelName: string | null = null;
     if (input.platforms.includes('kick') && !connectionsRepo.listForRole(this.o.db, 'kick', 'primary').some((r) => r.status === 'connected'))
       throw new AppError('bad_request', 'Not started: connect your main Kick account (Dashboard → Kick) or turn off Kick entry.');
+    if (input.platforms.includes('twitch') && !connectionsRepo.listForRole(this.o.db, 'twitch', 'primary').some((r) => r.status === 'connected'))
+      throw new AppError('bad_request', 'Not started: connect your main Twitch account (Dashboard → Twitch) or turn off Twitch entry.');
     if (input.platforms.includes('discord') && this.o.discord) {
       if (!input.discordChannel)
         throw new AppError('bad_request', 'Not started: choose the Discord channel for the giveaway embed, or turn off Discord entry.');
@@ -375,7 +393,7 @@ export class GiveawayService {
       throw new AppError('bad_request', `Not started: ${err instanceof Error ? err.message : 'the giveaway couldn’t be set up.'}`);
     }
     const started = this.require(g.id);
-    this.announce(started, 'started', startedMessage(started, this.kickMessages().started));
+    this.announce(started, 'started', (p) => startedMessage(started, this.kickMessages().started, p));
     this.lifecycle('started', started);
     await this.idle();
     return this.get(g.id);
@@ -383,7 +401,7 @@ export class GiveawayService {
 
   /**
    * Opens a giveaway right away, without the platform checks of createAndStart (used by it, and by the core's tests).
-   * Announces in Kick chat and posts the Discord embed in the background.
+   * Announces in chat and posts the Discord embed in the background.
    */
   create(raw: unknown): GiveawayView {
     const g = this.createOpen(this.parseCreate(raw), null, true);
@@ -411,6 +429,7 @@ export class GiveawayService {
           durationMinutes: input.durationMinutes,
           allowKick: input.platforms.includes('kick'),
           allowDiscord: input.platforms.includes('discord'),
+          allowTwitch: input.platforms.includes('twitch'),
           createdAt: at,
           endsAt,
           discordGuildId: input.discordChannel?.guildId ?? null,
@@ -431,7 +450,7 @@ export class GiveawayService {
     this.rememberChannel(input.discordChannel);
     const g = this.require(id);
     if (announce) {
-      this.announce(g, 'started', startedMessage(g, this.kickMessages().started));
+      this.announce(g, 'started', (p) => startedMessage(g, this.kickMessages().started, p));
       this.scheduleDiscord(id);
     }
     this.lifecycle('started', g);
@@ -479,6 +498,7 @@ export class GiveawayService {
       durationMinutes: input.durationMinutes === undefined ? existing.durationMinutes : input.durationMinutes,
       allowKick: platforms ? platforms.includes('kick') : existing.allowKick,
       allowDiscord,
+      allowTwitch: platforms ? platforms.includes('twitch') : existing.allowTwitch,
       updatedAt: this.iso(),
       discordGuildId: channel?.guildId ?? null,
       discordChannelId: channel?.channelId ?? null,
@@ -526,7 +546,7 @@ export class GiveawayService {
     }
     this.o.logger.info('giveaway started', { giveawayId: id, endsAt });
     const started = this.require(id);
-    this.announce(started, 'started', startedMessage(started, this.kickMessages().started));
+    this.announce(started, 'started', (p) => startedMessage(started, this.kickMessages().started, p));
     this.scheduleDiscord(id);
     this.lifecycle('started', started);
     return this.get(id);
@@ -629,7 +649,7 @@ export class GiveawayService {
     this.o.logger.info('giveaway drawn', { giveawayId: id, winners: result.length });
     const g = this.require(id);
     const entries = new Map(giveawaysRepo.entries(this.o.db, id).map((e) => [e.id, e]));
-    this.announce(g, 'winners', winnersMessage(g.prize, result.map((l) => entries.get(l.entryId)!), this.kickMessages().winners));
+    this.announce(g, 'winners', () => winnersMessage(g.prize, result.map((l) => entries.get(l.entryId)!), this.kickMessages().winners, g));
     this.scheduleDiscord(id);
     this.lifecycle('drawn', g, result.map((l) => entries.get(l.entryId)!));
     if (g.kickRewardId) this.retireReward(g.kickRewardId, 'delete', id);
@@ -674,7 +694,7 @@ export class GiveawayService {
     this.o.logger.info('giveaway redrawn', { giveawayId: id });
     const g = this.require(id);
     const entry = giveawaysRepo.entries(this.o.db, id).find((e) => e.id === picked.entryId)!;
-    this.announce(g, 'redraw', redrawMessage(g.prize, entry, this.kickMessages().redraw));
+    this.announce(g, 'redraw', () => redrawMessage(g.prize, entry, this.kickMessages().redraw, g));
     this.scheduleDiscord(id);
     this.lifecycle('redrawn', g, [entry]);
     return this.get(id);
@@ -687,7 +707,7 @@ export class GiveawayService {
     const bonus = giveawaysRepo.bonusTickets(this.o.db, g.id);
     return giveawaysRepo.entries(this.o.db, g.id).map((e) => {
       const extra = e.platform === 'kick' ? (bonus.get(e.platformUserId) ?? 0) : 0;
-      const subscriber = e.platform === 'kick' && e.subscriberVerified;
+      const subscriber = e.platform !== 'discord' && e.subscriberVerified;
       const multiplier = subscriber ? g.subscriberMultiplier : 1;
       return {
         entryId: e.id,
@@ -724,13 +744,13 @@ export class GiveawayService {
 
   /**
    * One entry attempt from a platform. The caller has verified the user's identity with the platform (signed Kick
-   * event, Discord interaction). Idempotent: entering again changes nothing. `subscriber`: evidence from the signed
-   * Kick chat event that the entrant is an active subscriber right now (evaluated once, at entry).
+   * event, Twitch EventSub, Discord interaction). Idempotent: entering again changes nothing. `subscriber`: evidence
+   * from the chat event that the entrant is an active subscriber right now (evaluated once, at entry).
    */
   enter(
     platform: GiveawayPlatform,
     user: { id: string; name: string },
-    source: EntrySource = platform === 'kick' ? 'chat' : 'command',
+    source: EntrySource = platform === 'discord' ? 'command' : 'chat',
     subscriber: { messageId: string } | null = null,
   ): EntryResult {
     this.closeOverdue();
@@ -744,7 +764,7 @@ export class GiveawayService {
     const id = user.id.trim();
     if (!/^[0-9A-Za-z_-]{1,32}$/.test(id)) return { outcome: 'not_eligible', prize: g.prize, reason: 'Your account couldn’t be identified.' };
     const at = this.iso();
-    const verified = platform === 'kick' && subscriber !== null;
+    const verified = platform !== 'discord' && subscriber !== null;
     const added = giveawaysRepo.addEntry(this.o.db, {
       giveawayId: g.id,
       platform,
@@ -754,7 +774,7 @@ export class GiveawayService {
       source,
       subscriberVerified: verified,
       subscriberEvidence: verified
-        ? JSON.stringify({ kind: 'kick_chat_subscriber_badge', messageId: subscriber!.messageId.slice(0, 100), at })
+        ? JSON.stringify({ kind: `${platform}_chat_subscriber_badge`, messageId: subscriber!.messageId.slice(0, 100), at })
         : null,
     });
     if (!added) return { outcome: 'already_entered', prize: g.prize };
@@ -762,51 +782,52 @@ export class GiveawayService {
     return { outcome: 'entered', prize: g.prize, entryCount: giveawaysRepo.entryCount(this.o.db, g.id) };
   }
 
-  /** Kick: "!enter" as the first word of a chat message from the main channel (already signature-checked). */
-  private onKickMessage(m: KickChatMessage): void {
+  /** "!enter" as the first word of a chat message from the main channel (already verified by the chat service). */
+  private onChatMessage(platform: GiveawayChatPlatform, m: GiveawayChatMessage): void {
     try {
-      if (this.seen.has(m.messageId)) return;
-      this.seen.add(m.messageId);
+      const key = `${platform}:${m.messageId}`;
+      if (this.seen.has(key)) return;
+      this.seen.add(key);
       if (this.seen.size > REMEMBERED_MESSAGES) this.seen.delete(this.seen.values().next().value!);
       const first = m.content.trim().split(/\s+/, 1)[0]?.toLowerCase();
-      if (first !== GIVEAWAY_ENTER.kick) return;
+      if (first !== GIVEAWAY_ENTER[platform]) return;
       // The channel owner (from the verified event) can't enter their own giveaway; neither can the chatbot account.
       if (m.senderUserId === m.broadcasterUserId) return;
-      // Subscriber status: Kick's "subscriber" badge on this signed chat event, i.e. at the moment of entering.
-      const subscriber = m.badgeTypes.includes('subscriber') ? { messageId: m.messageId } : null;
-      const result = this.enter('kick', { id: m.senderUserId, name: m.senderUsername }, 'chat', subscriber);
+      // Subscriber status: the platform's badge on this chat event, i.e. at the moment of entering.
+      const subscriber = m.badgeTypes.includes('subscriber') || (platform === 'twitch' && m.badgeTypes.includes('founder')) ? { messageId: m.messageId } : null;
+      const result = this.enter(platform, { id: m.senderUserId, name: m.senderUsername }, 'chat', subscriber);
       // Only a new entry is announced (repeats and ineligible accounts stay silent). Never tickets, totals or odds.
-      if (result.outcome === 'entered') this.say(this.kickText('entered', { user: displayName(m.senderUsername, m.senderUserId), prize: result.prize }), true);
-      else if (result.outcome === 'closed' || (result.outcome === 'no_giveaway' && this.recentlyClosed())) this.replyClosed();
+      if (result.outcome === 'entered') this.say(platform, this.kickText('entered', { user: displayName(m.senderUsername, m.senderUserId), prize: result.prize }), true);
+      else if (result.outcome === 'closed' || (result.outcome === 'no_giveaway' && this.recentlyClosed(platform))) this.replyClosed(platform);
       else if (result.outcome !== 'already_entered' && result.outcome !== 'no_giveaway')
-        this.o.logger.info('kick giveaway entry not added', { outcome: result.outcome });
+        this.o.logger.info('giveaway entry not added', { platform, outcome: result.outcome });
     } catch (err) {
-      this.o.logger.error('kick giveaway entry failed', { err });
+      this.o.logger.error('giveaway chat entry failed', { platform, err });
     }
   }
 
   /** Whether a giveaway closed recently (so "!enter" gets a short "closed" answer instead of silence). */
-  private recentlyClosed(): boolean {
+  private recentlyClosed(platform: GiveawayChatPlatform): boolean {
     const cutoff = this.o.now().getTime() - CLOSED_REPLY_WINDOW_MS;
     return giveawaysRepo
       .list(this.o.db)
-      .some((g) => g.allowKick && (g.status === 'closed' || g.status === 'drawn') && g.closedAt !== null && Date.parse(g.closedAt) >= cutoff);
+      .some((g) => platformsOf(g).includes(platform) && (g.status === 'closed' || g.status === 'drawn') && g.closedAt !== null && Date.parse(g.closedAt) >= cutoff);
   }
 
-  private replyClosed(): void {
+  private replyClosed(platform: GiveawayChatPlatform): void {
     const now = this.o.now().getTime();
-    if (now - this.lastClosedReplyAt < CLOSED_REPLY_COOLDOWN_MS) return;
-    this.lastClosedReplyAt = now;
-    this.say(this.kickText('closedReply', {}), false);
+    if (now - this.lastClosedReplyAt[platform] < CLOSED_REPLY_COOLDOWN_MS) return;
+    this.lastClosedReplyAt[platform] = now;
+    this.say(platform, this.kickText('closedReply', {}), false);
   }
 
   /** Who can't enter, from verified platform data: the streamer's own accounts and the chatbot. */
   private ineligibility(platform: GiveawayPlatform, userId: string): string | null {
-    if (platform === 'kick') {
-      const own = connectionsRepo.listForRole(this.o.db, 'kick', 'primary').some((r) => r.externalAccountId === userId);
+    if (platform !== 'discord') {
+      const own = connectionsRepo.listForRole(this.o.db, platform, 'primary').some((r) => r.externalAccountId === userId);
       if (own) return 'The channel owner can’t enter their own giveaway.';
-      const bot = this.o.kick.chatbotIdentity().userId;
-      const botAccount = connectionsRepo.listForRole(this.o.db, 'kick', 'bot').some((r) => r.externalAccountId === userId);
+      const bot = this.o[platform]?.chatbotIdentity().userId ?? null;
+      const botAccount = connectionsRepo.listForRole(this.o.db, platform, 'bot').some((r) => r.externalAccountId === userId);
       if (botAccount || (bot !== null && bot === userId)) return 'The chatbot account can’t enter.';
       return null;
     }
@@ -1008,45 +1029,54 @@ export class GiveawayService {
     this.o.logger.info('giveaway entries closed', { giveawayId: g.id });
     this.scheduleDiscord(g.id);
     if (g.kickRewardId) this.retireReward(g.kickRewardId, 'pause', g.id);
-    if (announce) this.announce(g, 'closed', this.kickText('closed', { prize: g.prize }));
+    if (announce) this.announce(g, 'closed', () => this.kickText('closed', { prize: g.prize }));
     this.lifecycle('closed', g);
   }
 
-  // ── announcements (Kick chat) ──
+  // ── announcements (Kick and Twitch chat) ──
 
   /**
-   * A short public Kick chat message (entry confirmations, "entries are closed"), through the same queue, spacing and
-   * send path as the other announcements. Entry confirmations are bounded during bursts (everyone is still entered).
+   * A short public chat message (entry confirmations, "entries are closed"), through the same queue, spacing and send
+   * path as the other announcements. Entry confirmations are bounded during bursts (everyone is still entered).
    */
-  private say(text: string, entry: boolean): void {
+  private say(platform: GiveawayChatPlatform, text: string, entry: boolean): void {
     if (!text) return; // an edited message that is empty once its variables are filled in
     if (entry && this.pendingEntryAnnouncements >= MAX_PENDING_ENTRY_ANNOUNCEMENTS) {
-      this.o.logger.info('kick entry announcement skipped (busy)');
+      this.o.logger.info('entry announcement skipped (busy)', { platform });
       return;
     }
     if (entry) this.pendingEntryAnnouncements++;
     this.announcing = this.announcing.then(async () => {
       try {
-        if (!this.o.kick.sendReadiness().ready) return;
-        for (let attempt = 0; ; attempt++) {
-          const wait = this.o.kick.msUntilNextSend();
-          if (wait > 0) await this.sleep(Math.min(wait, MAX_SPACING_WAIT_MS));
-          const outcome = await this.o.kick.sendResult(fitKick(text));
-          if (outcome.ok || !outcome.locallyThrottled || attempt > 0) {
-            if (!outcome.ok) this.o.logger.info('kick giveaway message not posted', { outcome: outcome.outcome });
-            return;
-          }
-        }
+        const posted = await this.post(platform, text);
+        if (posted.outcome !== 'sent') this.o.logger.info('giveaway chat message not posted', { platform, outcome: posted.outcome });
       } catch (err) {
-        this.o.logger.error('kick giveaway message failed', { err });
+        this.o.logger.error('giveaway chat message failed', { platform, err });
       } finally {
         if (entry) this.pendingEntryAnnouncements--;
       }
     });
   }
 
-  private announce(g: GiveawayRecord, kind: GiveawayAnnouncementView['kind'], text: string): void {
-    if (!g.allowKick) return;
+  /** Posts one message, waiting out CONDUIT's own send spacing. */
+  private async post(platform: GiveawayChatPlatform, text: string): Promise<{ outcome: GiveawayAnnouncementView['outcome']; detail: string | null }> {
+    const chat = this.o[platform]!;
+    const readiness = chat.sendReadiness();
+    if (!readiness.ready) return { outcome: 'skipped', detail: readiness.problem ?? `${CHAT_LABEL[platform]} chat isn’t ready.` };
+    for (let attempt = 0; ; attempt++) {
+      const wait = chat.msUntilNextSend();
+      if (wait > 0) await this.sleep(Math.min(wait, MAX_SPACING_WAIT_MS));
+      const outcome = await chat.sendResult(fitKick(text));
+      if (outcome.ok) return { outcome: 'sent', detail: null };
+      if (outcome.locallyThrottled && attempt === 0) continue;
+      return { outcome: outcome.outcome, detail: outcome.message };
+    }
+  }
+
+  /** Posts in each chat the giveaway uses. One note is kept: "sent" when every chat got it, else the first problem. */
+  private announce(g: GiveawayRecord, kind: GiveawayAnnouncementView['kind'], text: (platform: GiveawayChatPlatform) => string): void {
+    const platforms = chatPlatformsOf(g).filter((p) => this.o[p]);
+    if (platforms.length === 0) return;
     this.announcing = this.announcing.then(async () => {
       const record = (outcome: GiveawayAnnouncementView['outcome'], detail: string | null) => {
         if (!giveawaysRepo.get(this.o.db, g.id)) return; // cancelled meanwhile
@@ -1054,17 +1084,13 @@ export class GiveawayService {
         this.o.logger.info('giveaway announcement', { giveawayId: g.id, kind, outcome });
       };
       try {
-        if (!text) return record('skipped', 'The message is empty once its variables are filled in.');
-        const readiness = this.o.kick.sendReadiness();
-        if (!readiness.ready) return record('skipped', readiness.problem ?? 'Kick chat isn’t ready.');
-        for (let attempt = 0; ; attempt++) {
-          const wait = this.o.kick.msUntilNextSend();
-          if (wait > 0) await this.sleep(Math.min(wait, MAX_SPACING_WAIT_MS));
-          const outcome = await this.o.kick.sendResult(fitKick(text));
-          if (outcome.ok) return record('sent', null);
-          if (outcome.locallyThrottled && attempt === 0) continue;
-          return record(outcome.outcome, outcome.message);
+        let problem: { outcome: GiveawayAnnouncementView['outcome']; detail: string | null } | null = null;
+        for (const p of platforms) {
+          const message = text(p);
+          const posted = message ? await this.post(p, message) : { outcome: 'skipped' as const, detail: 'The message is empty once its variables are filled in.' };
+          if (posted.outcome !== 'sent') problem ??= { outcome: posted.outcome, detail: platforms.length > 1 ? `${CHAT_LABEL[p]}: ${posted.detail}` : posted.detail };
         }
+        record(problem?.outcome ?? 'sent', problem?.detail ?? null);
       } catch (err) {
         this.o.logger.error('giveaway announcement failed', { giveawayId: g.id, kind, err });
         try {
@@ -1252,7 +1278,7 @@ export class GiveawayService {
   private view(g: GiveawayRecord, counts?: Record<GiveawayPlatform, number>): GiveawayView {
     let byPlatform = counts;
     if (!byPlatform) {
-      byPlatform = { kick: 0, discord: 0 };
+      byPlatform = noEntries();
       for (const c of giveawaysRepo.entryCounts(this.o.db)) if (c.giveawayId === g.id) byPlatform[c.platform] = c.n;
     }
     const lines = this.ticketLines(g);
@@ -1272,7 +1298,7 @@ export class GiveawayService {
       closedAt: g.closedAt,
       drawnAt: g.drawnAt,
       cancelledAt: g.cancelledAt,
-      entryCount: byPlatform.kick + byPlatform.discord,
+      entryCount: byPlatform.kick + byPlatform.twitch + byPlatform.discord,
       entriesByPlatform: byPlatform,
       ticketCount: lines.reduce((sum, l) => sum + l.weight, 0),
       subscriberMultiplier: g.subscriberMultiplier,
@@ -1354,8 +1380,16 @@ function poolTickets(snapshot: string | null): number | null {
   }
 }
 
+const CHAT_LABEL: Record<GiveawayChatPlatform, string> = { kick: 'Kick', twitch: 'Twitch' };
+
+const noEntries = (): Record<GiveawayPlatform, number> => ({ kick: 0, twitch: 0, discord: 0 });
+
+function chatPlatformsOf(g: Pick<GiveawayRecord, 'allowKick' | 'allowTwitch'>): GiveawayChatPlatform[] {
+  return [...(g.allowKick ? (['kick'] as const) : []), ...(g.allowTwitch ? (['twitch'] as const) : [])];
+}
+
 function platformsOf(g: GiveawayRecord): GiveawayPlatform[] {
-  return [...(g.allowKick ? (['kick'] as const) : []), ...(g.allowDiscord ? (['discord'] as const) : [])];
+  return [...chatPlatformsOf(g), ...(g.allowDiscord ? (['discord'] as const) : [])];
 }
 
 /** A Discord announcement channel only makes sense when Discord is an entry platform. */
@@ -1377,8 +1411,8 @@ export interface GiveawayLifecycleEvent {
   giveawayId: string;
   prize: string;
   winnerCount: number;
-  platforms: Array<'kick' | 'discord'>;
-  /** drawn: the winners; redrawn: the new winner (Kick as @name, Discord as "name (Discord)"). */
+  platforms: GiveawayPlatform[];
+  /** drawn: the winners; redrawn: the new winner (chat as @name, Discord as "name (Discord)"). */
   winners: string[];
 }
 
@@ -1388,13 +1422,19 @@ function displayName(name: string, id: string): string {
   return clean || id;
 }
 
-function entrantLabel(e: Pick<GiveawayEntryRecord, 'platform' | 'displayName'>): string {
-  return e.platform === 'kick' ? `@${e.displayName}` : `${e.displayName} (Discord)`;
+/** A winner's public name. With both Kick and Twitch in the giveaway, chat winners say which chat they're from. */
+function entrantLabel(e: Pick<GiveawayEntryRecord, 'platform' | 'displayName'>, g?: Pick<GiveawayRecord, 'allowKick' | 'allowTwitch'>): string {
+  if (e.platform === 'discord') return `${e.displayName} (Discord)`;
+  return g?.allowKick && g.allowTwitch ? `@${e.displayName} (${CHAT_LABEL[e.platform]})` : `@${e.displayName}`;
 }
 
-/** Public Kick start announcement (the saved template, filled in): how to enter, no counts or odds. */
-export function startedMessage(g: GiveawayRecord, template = KICK_GIVEAWAY_MESSAGE_DEFAULTS.started): string {
-  const how = [g.allowKick ? `type ${GIVEAWAY_ENTER.kick} in chat` : null, g.allowDiscord ? `click ${GIVEAWAY_BUTTONS.enter.label} on the Discord announcement` : null]
+/**
+ * Public start announcement (the saved template, filled in): how to enter, no counts or odds. Channel Points rewards are
+ * Kick's, so only Kick chat hears about them.
+ */
+export function startedMessage(g: GiveawayRecord, template = KICK_GIVEAWAY_MESSAGE_DEFAULTS.started, platform: GiveawayChatPlatform = 'kick'): string {
+  const reward = platform === 'kick' ? g.kickRewardTitle : null;
+  const how = [g.allowKick || g.allowTwitch ? `type ${GIVEAWAY_ENTER[platform]} in chat` : null, g.allowDiscord ? `click ${GIVEAWAY_BUTTONS.enter.label} on the Discord announcement` : null]
     .filter(Boolean)
     .join(' or ');
   const duration = g.durationMinutes === null ? '' : formatMinutes(g.durationMinutes);
@@ -1403,8 +1443,8 @@ export function startedMessage(g: GiveawayRecord, template = KICK_GIVEAWAY_MESSA
     how_to_enter: how,
     winner_count: String(g.winnerCount),
     winners_note: g.winnerCount > 1 ? `${g.winnerCount} winners.` : '',
-    reward: g.kickRewardTitle ?? '',
-    reward_note: g.kickRewardTitle ? `Redeem “${g.kickRewardTitle}” with Channel Points for bonus tickets.` : '',
+    reward: reward ?? '',
+    reward_note: reward ? `Redeem “${reward}” with Channel Points for bonus tickets.` : '',
     duration,
     closes_note: duration ? `Entries close in ${duration}.` : '',
   });
@@ -1415,10 +1455,11 @@ export function winnersMessage(
   prize: string,
   winners: ReadonlyArray<Pick<GiveawayEntryRecord, 'platform' | 'displayName'>>,
   template = KICK_GIVEAWAY_MESSAGE_DEFAULTS.winners,
+  g?: Pick<GiveawayRecord, 'allowKick' | 'allowTwitch'>,
 ): string {
   return renderKickGiveawayMessage('winners', template, {
     prize,
-    winners: winners.map(entrantLabel).join(', '),
+    winners: winners.map((w) => entrantLabel(w, g)).join(', '),
     winner_label: winners.length === 1 ? 'Winner' : 'Winners',
   });
 }
@@ -1427,8 +1468,9 @@ export function redrawMessage(
   prize: string,
   winner: Pick<GiveawayEntryRecord, 'platform' | 'displayName'>,
   template = KICK_GIVEAWAY_MESSAGE_DEFAULTS.redraw,
+  g?: Pick<GiveawayRecord, 'allowKick' | 'allowTwitch'>,
 ): string {
-  return renderKickGiveawayMessage('redraw', template, { prize, winner: entrantLabel(winner) });
+  return renderKickGiveawayMessage('redraw', template, { prize, winner: entrantLabel(winner, g) });
 }
 
 function formatMinutes(m: number): string {
@@ -1437,7 +1479,7 @@ function formatMinutes(m: number): string {
   return `${m} ${m === 1 ? 'minute' : 'minutes'}`;
 }
 
-/** Shortens a message to Kick's limit, ending with "…". */
+/** Shortens a message to Kick's limit (Twitch's is the same), ending with "…". */
 export function fitKick(text: string): string {
   const chars = [...new Intl.Segmenter().segment(text)].map((s) => s.segment);
   if (chars.length <= KICK_CHAT_MAX_CHARS) return text;

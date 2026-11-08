@@ -1,7 +1,7 @@
 /**
  * A simulated Twitch (automated, mocked — not proof of live Twitch behaviour): the OAuth server at id.twitch.tv
- * (authorization code, refresh, client credentials, validate, revoke), Helix /users, /streams, /eventsub/subscriptions
- * and /chat/messages at api.twitch.tv, an EventSub WebSocket server on loopback (startEventSub), and profile pictures
+ * (authorization code, refresh, client credentials, validate, revoke), Helix /users, /streams, /eventsub/subscriptions,
+ * /chat/messages, /chat/settings and /moderation/* at api.twitch.tv, an EventSub WebSocket server on loopback (startEventSub), and profile pictures
  * on static-cdn.jtvnw.net. Shapes follow dev.twitch.tv/docs.
  */
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -31,6 +31,14 @@ export class FakeTwitch {
   readonly directory = new Map<string, FakeTwitchUser>();
   /** Live streams, by login. */
   readonly live = new Map<string, FakeTwitchStream>();
+  /** Channel information (title, category), by login; also there while offline. */
+  readonly channels = new Map<string, { title: string; game_name: string }>();
+  /** When each user followed the broadcaster, by user id. */
+  readonly followers = new Map<string, string>();
+  /** Categories /search/categories can find. */
+  readonly categories: Array<{ id: string; name: string }> = [];
+  /** PATCH /channels requests Twitch accepted, in order. */
+  readonly channelUpdates: Array<{ broadcasterId: string; title?: string; game_id?: string }> = [];
   private counter = 0;
   private readonly codes = new Map<string, { redirectUri: string; user: FakeTwitchUser; scopes: string[] }>();
   /** User tokens (null user: an app token). */
@@ -41,7 +49,21 @@ export class FakeTwitch {
   /** Chat messages Twitch accepted, in order. */
   readonly sentChat: Array<{ broadcasterId: string; senderId: string; message: string }> = [];
   /** EventSub subscriptions created on WebSocket sessions. */
-  readonly subscriptions: Array<{ id: string; sessionId: string; broadcasterId: string; userId: string }> = [];
+  readonly subscriptions: Array<{ id: string; type: string; sessionId: string; broadcasterId: string; userId: string }> = [];
+  /** Who is banned or timed out (`until` null: banned), by user id. */
+  readonly bans = new Map<string, { until: string | null; reason: string | null }>();
+  /** Message ids DELETE /moderation/chat removed. */
+  readonly deletedMessages: string[] = [];
+  /** The channel's moderators, by user id. */
+  readonly moderators = new Set<string>();
+  /** PATCH /chat/settings bodies Twitch accepted, in order. */
+  readonly chatSettingsUpdates: Array<Record<string, unknown>> = [];
+  readonly chatSettings: Record<string, unknown> = { slow_mode: false, slow_mode_wait_time: null, follower_mode: false, follower_mode_duration: null, subscriber_mode: false, emote_mode: false, unique_chat_mode: false };
+  shieldMode = false;
+  /** Twitch answers ban requests only after this long, so their events arrive first (ms). */
+  banAnswerDelayMs = 0;
+  /** The next moderation request is answered with this status (and message). */
+  failNextModeration: { status: number; message: string } | null = null;
   /** The next chat send is dropped (is_sent false) with this reason. */
   dropNextChat: string | null = null;
   private wss: WebSocketServer | null = null;
@@ -112,7 +134,7 @@ export class FakeTwitch {
     broadcaster: FakeTwitchUser,
     from: FakeTwitchUser,
     text: string,
-    opts: { badges?: Array<{ set_id: string; id?: string; info?: string }>; messageId?: string; source?: string | null } = {},
+    opts: { badges?: Array<{ set_id: string; id?: string; info?: string }>; messageId?: string; source?: string | null; fragments?: Array<{ type: string; text: string }> } = {},
   ): string {
     const messageId = opts.messageId ?? `msg-${++this.counter}`;
     const event = {
@@ -123,13 +145,13 @@ export class FakeTwitch {
       chatter_user_login: from.login,
       chatter_user_name: from.display_name,
       message_id: messageId,
-      message: { text, fragments: [{ type: 'text', text }] },
+      message: { text, fragments: opts.fragments ?? [{ type: 'text', text }] },
       color: '#9146FF',
       badges: (opts.badges ?? []).map((b) => ({ set_id: b.set_id, id: b.id ?? '1', info: b.info ?? '' })),
       message_type: 'text',
       ...(opts.source !== undefined ? { source_broadcaster_user_id: opts.source } : {}),
     };
-    for (const sub of this.subscriptions.filter((s) => s.broadcasterId === broadcaster.id)) {
+    for (const sub of this.subscriptions.filter((s) => s.broadcasterId === broadcaster.id && s.type === 'channel.chat.message')) {
       this.sockets
         .get(sub.sessionId)
         ?.send(this.frame('notification', { subscription: { id: sub.id, type: 'channel.chat.message', version: '1', status: 'enabled' }, event }, `notif-${messageId}-${sub.id}`));
@@ -137,10 +159,38 @@ export class FakeTwitch {
     return messageId;
   }
 
+  /** Someone bans or times out a user (`endsAt` set): channel.ban reaches the channel's subscribers. */
+  banEvent(broadcaster: FakeTwitchUser, user: FakeTwitchUser, moderator: FakeTwitchUser, opts: { reason?: string; bannedAt?: string; endsAt?: string | null } = {}): void {
+    const endsAt = opts.endsAt ?? null;
+    this.moderationEvent('channel.ban', broadcaster, user, moderator, { reason: opts.reason ?? '', banned_at: opts.bannedAt ?? new Date().toISOString(), ends_at: endsAt, is_permanent: endsAt === null });
+  }
+
+  unbanEvent(broadcaster: FakeTwitchUser, user: FakeTwitchUser, moderator: FakeTwitchUser): void {
+    this.moderationEvent('channel.unban', broadcaster, user, moderator, {});
+  }
+
+  private moderationEvent(type: string, broadcaster: FakeTwitchUser, user: FakeTwitchUser, moderator: FakeTwitchUser, extra: Record<string, unknown>): void {
+    const event = {
+      user_id: user.id,
+      user_login: user.login,
+      user_name: user.display_name,
+      broadcaster_user_id: broadcaster.id,
+      broadcaster_user_login: broadcaster.login,
+      broadcaster_user_name: broadcaster.display_name,
+      moderator_user_id: moderator.id,
+      moderator_user_login: moderator.login,
+      moderator_user_name: moderator.display_name,
+      ...extra,
+    };
+    for (const sub of this.subscriptions.filter((s) => s.broadcasterId === broadcaster.id && s.type === type)) {
+      this.sockets.get(sub.sessionId)?.send(this.frame('notification', { subscription: { id: sub.id, type, version: '1', status: 'enabled' }, event }));
+    }
+  }
+
   /** Twitch revokes the chat subscriptions (e.g. the user disconnected the app on twitch.tv). */
   revokeSubscriptions(status = 'authorization_revoked'): void {
     for (const sub of this.subscriptions) {
-      this.sockets.get(sub.sessionId)?.send(this.frame('revocation', { subscription: { id: sub.id, type: 'channel.chat.message', version: '1', status } }));
+      this.sockets.get(sub.sessionId)?.send(this.frame('revocation', { subscription: { id: sub.id, type: sub.type, version: '1', status } }));
     }
     this.subscriptions.length = 0;
   }
@@ -236,9 +286,13 @@ export class FakeTwitch {
         if (!owner) return json(400, { status: 400, message: 'websocket transports require a user access token' });
         const sessionId = payload.transport?.session_id;
         if (payload.transport?.method !== 'websocket' || !this.sockets.has(sessionId)) return json(400, { status: 400, message: 'session does not exist' });
-        if (payload.condition?.user_id !== owner.id || !scopes.includes('user:read:chat')) return json(403, { status: 403, message: 'subscription missing proper authorization' });
+        const authorized =
+          payload.type === 'channel.chat.message'
+            ? payload.condition?.user_id === owner.id && scopes.includes('user:read:chat')
+            : payload.condition?.broadcaster_user_id === owner.id && scopes.includes('channel:moderate');
+        if (!authorized) return json(403, { status: 403, message: 'subscription missing proper authorization' });
         const id = `sub-${++this.counter}`;
-        this.subscriptions.push({ id, sessionId, broadcasterId: payload.condition.broadcaster_user_id, userId: owner.id });
+        this.subscriptions.push({ id, type: payload.type, sessionId, broadcasterId: payload.condition.broadcaster_user_id, userId: owner.id });
         return json(202, { data: [{ id, status: 'enabled', type: payload.type, version: payload.version, condition: payload.condition, transport: payload.transport }], total: 1 });
       }
       if (url.pathname === '/helix/chat/messages' && method === 'POST') {
@@ -255,6 +309,68 @@ export class FakeTwitch {
         if (broadcaster) this.chat(broadcaster, owner, payload.message);
         return json(200, { data: [{ message_id: `sent-${this.counter}`, is_sent: true, drop_reason: null }] });
       }
+      if (url.pathname.startsWith('/helix/moderation/') || url.pathname === '/helix/chat/settings') {
+        const q = url.searchParams;
+        const needs = (scope: string) => !owner || owner.id !== q.get('broadcaster_id') || !scopes.includes(scope);
+        const asModerator = (scope: string) => needs(scope) || q.get('moderator_id') !== owner?.id;
+        const missing = json(401, { status: 401, message: 'Missing scope' });
+        const reading = url.pathname === '/helix/chat/settings' && method === 'GET';
+        if (!reading && this.failNextModeration) {
+          const { status, message } = this.failNextModeration;
+          this.failNextModeration = null;
+          return json(status, { status, message });
+        }
+        if (url.pathname === '/helix/moderation/bans' && method === 'POST') {
+          if (asModerator('moderator:manage:banned_users')) return missing;
+          const { user_id: userId, duration, reason } = (payload.data ?? {}) as { user_id?: string; duration?: number; reason?: string };
+          if (!userId) return json(400, { status: 400, message: 'user_id is required' });
+          if (duration !== undefined && (duration < 1 || duration > 1_209_600)) return json(400, { status: 400, message: 'The value in the duration field is not valid' });
+          if (this.bans.get(userId)?.until === null) return json(400, { status: 400, message: 'The user specified in the user_id field is already banned.' });
+          const until = duration === undefined ? null : new Date(Date.now() + duration * 1000).toISOString();
+          this.bans.set(userId, { until, reason: reason ?? null });
+          const user = [...this.directory.values()].find((u) => u.id === userId);
+          // Like real Twitch, CONDUIT's own ban comes back as an event too.
+          if (user) this.banEvent(owner!, user, owner!, { ...(reason ? { reason } : {}), endsAt: until });
+          if (this.banAnswerDelayMs) await new Promise((r) => setTimeout(r, this.banAnswerDelayMs));
+          return json(200, { data: [{ broadcaster_id: owner!.id, moderator_id: owner!.id, user_id: userId, created_at: new Date().toISOString(), end_time: until }] });
+        }
+        if (url.pathname === '/helix/moderation/bans' && method === 'DELETE') {
+          if (asModerator('moderator:manage:banned_users')) return missing;
+          const userId = q.get('user_id') ?? '';
+          if (!this.bans.delete(userId)) return json(400, { status: 400, message: 'The user specified in the user_id query parameter is not banned.' });
+          const user = [...this.directory.values()].find((u) => u.id === userId);
+          if (user) this.unbanEvent(owner!, user, owner!);
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === '/helix/moderation/chat' && method === 'DELETE') {
+          if (asModerator('moderator:manage:chat_messages')) return missing;
+          this.deletedMessages.push(q.get('message_id') ?? '');
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === '/helix/moderation/moderators') {
+          if (needs('moderation:read')) return missing;
+          const ids = q.getAll('user_id').filter((id) => this.moderators.has(id));
+          return json(200, { data: ids.map((id) => ({ user_id: id })) });
+        }
+        if (url.pathname === '/helix/moderation/shield_mode') {
+          if (asModerator('moderator:manage:shield_mode')) return missing;
+          if (method === 'PUT') this.shieldMode = payload.is_active === true;
+          return json(200, { data: [{ is_active: this.shieldMode, moderator_id: owner!.id, moderator_login: owner!.login, moderator_name: owner!.display_name, last_activated_at: '' }] });
+        }
+        if (reading) return json(200, { data: [{ broadcaster_id: q.get('broadcaster_id'), ...this.chatSettings }] });
+        if (url.pathname === '/helix/chat/settings' && method === 'PATCH') {
+          if (asModerator('moderator:manage:chat_settings')) return missing;
+          // A value may only come with its mode on.
+          if ((payload.slow_mode_wait_time !== undefined && payload.slow_mode !== true) || (payload.follower_mode_duration !== undefined && payload.follower_mode !== true)) {
+            return json(400, { status: 400, message: 'A mode is off but its value was set' });
+          }
+          this.chatSettingsUpdates.push(payload);
+          Object.assign(this.chatSettings, payload);
+          if (payload.slow_mode === false) this.chatSettings.slow_mode_wait_time = null;
+          if (payload.follower_mode === false) this.chatSettings.follower_mode_duration = null;
+          return json(200, { data: [{ broadcaster_id: q.get('broadcaster_id'), ...this.chatSettings }] });
+        }
+      }
       if (url.pathname === '/helix/users') {
         const logins = url.searchParams.getAll('login');
         const ids = url.searchParams.getAll('id');
@@ -265,6 +381,26 @@ export class FakeTwitch {
           data = [owner];
         } else data = [...this.directory.values()].filter((u) => logins.includes(u.login) || ids.includes(u.id));
         return json(200, { data });
+      }
+      if (url.pathname === '/helix/channels' && method === 'GET') {
+        const u = [...this.directory.values()].find((x) => x.id === url.searchParams.get('broadcaster_id'));
+        const c = u && this.channels.get(u.login);
+        return json(200, { data: c ? [{ broadcaster_id: u.id, ...c }] : [] });
+      }
+      if (url.pathname === '/helix/channels' && method === 'PATCH') {
+        const broadcasterId = url.searchParams.get('broadcaster_id')!;
+        if (owner?.id !== broadcasterId || !scopes.includes('channel:manage:broadcast')) return json(401, { status: 401, message: 'Missing scope: channel:manage:broadcast' });
+        this.channelUpdates.push({ broadcasterId, ...payload });
+        return new Response(null, { status: 204 });
+      }
+      if (url.pathname === '/helix/channels/followers') {
+        if (owner?.id !== url.searchParams.get('broadcaster_id') || !scopes.includes('moderator:read:followers')) return json(401, { status: 401, message: 'Missing scope' });
+        const at = this.followers.get(url.searchParams.get('user_id') ?? '');
+        return json(200, { data: at ? [{ user_id: url.searchParams.get('user_id'), followed_at: at }] : [], total: at ? 1 : 0 });
+      }
+      if (url.pathname === '/helix/search/categories') {
+        const q = (url.searchParams.get('query') ?? '').toLowerCase();
+        return json(200, { data: this.categories.filter((c) => c.name.toLowerCase().includes(q)) });
       }
       if (url.pathname === '/helix/streams') {
         const ids = url.searchParams.getAll('user_id');

@@ -44,7 +44,10 @@ export function AppearanceSection() {
   return (
     <section className="card appearance-card" aria-labelledby="appearance-title">
       <div className="card-head">
-        <h2 id="appearance-title">Appearance &amp; Themes</h2>
+        <div>
+          <h2 id="appearance-title">Appearance &amp; Themes</h2>
+          <p className="muted small">Choose a theme. Preview shows it across the whole app right away; Apply keeps it.</p>
+        </div>
       </div>
 
       {preview && (
@@ -78,6 +81,7 @@ export function AppearanceSection() {
       </ul>
 
       <div className="button-row appearance-test">
+        <span className="small muted">See how notifications look in this theme:</span>
         <Button variant="secondary" className="btn btn-secondary btn-small" onClick={() => showTestAlert('info')}>
           Show a test notification
         </Button>
@@ -135,7 +139,8 @@ function ThemeCard({ theme: t, applied, selected, onPreview, onApply, busy }: { 
         {t.art?.preview && <img className="theme-mini-art" src={t.art.preview.src} alt="" draggable={false} />}
       </div>
       <div className="theme-card-body">
-        <strong title={t.description}>{t.name}</strong>
+        <strong>{t.name}</strong>
+        <span className="muted small">{t.description}</span>
         <span className="theme-badges">
           {applied && <span className="pill pill-ok">Applied</span>}
           {selected && !applied && <span className="pill pill-warn">Previewing</span>}

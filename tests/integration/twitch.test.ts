@@ -78,7 +78,7 @@ describe('Twitch setup', () => {
     const started = await call<{ authorizationUrl: string }>('POST', '/api/connections/twitch/connect');
     const url = new URL(started.body.authorizationUrl);
     expect(url.origin + url.pathname).toBe('https://id.twitch.tv/oauth2/authorize');
-    expect(Object.fromEntries(url.searchParams)).toMatchObject({ client_id: TWITCH_CLIENT_ID, response_type: 'code', scope: 'user:read:chat user:write:chat', force_verify: 'true' });
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({ client_id: TWITCH_CLIENT_ID, response_type: 'code', scope: 'user:read:chat user:write:chat moderator:read:followers channel:manage:broadcast moderator:manage:banned_users moderator:manage:chat_messages moderation:read moderator:manage:chat_settings moderator:manage:shield_mode channel:moderate', force_verify: 'true' });
     expect((await fetch(twitch.approve(url, user(1)))).status).toBe(200);
 
     const s = (await call<TwitchSetupState>('GET', '/api/twitch/setup')).body;

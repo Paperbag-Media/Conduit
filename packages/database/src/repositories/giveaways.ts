@@ -1,12 +1,12 @@
 import { execute, queryAll, queryOne, type Database } from '../sqlite';
 
 export type GiveawayStatus = 'draft' | 'open' | 'closed' | 'drawn' | 'cancelled';
-export type GiveawayPlatform = 'kick' | 'discord';
+export type GiveawayPlatform = 'kick' | 'twitch' | 'discord';
 export type AnnouncementKind = 'started' | 'closed' | 'winners' | 'redraw';
 export type AnnouncementOutcome = 'sent' | 'failed' | 'unconfirmed' | 'skipped';
 export type DiscordAnnouncementStatus = 'posted' | 'failed' | 'missing';
 /**
- * How an entry was made: 'chat' = Kick !enter; 'command' = a Discord interaction (the Enter Giveaway button, or an
+ * How an entry was made: 'chat' = !enter in Kick or Twitch chat; 'command' = a Discord interaction (the Enter Giveaway button, or an
  * earlier slash command); 'reaction' = an earlier 🎉 reaction (no longer used for entering; kept on existing entries).
  * Entries are never removed by entrants (there is no leave option).
  */
@@ -22,6 +22,7 @@ export interface GiveawayRecord {
   durationMinutes: number | null;
   allowKick: boolean;
   allowDiscord: boolean;
+  allowTwitch: boolean;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -48,7 +49,7 @@ export interface GiveawayRecord {
   kickRewardId: string | null;
   kickRewardStatus: KickRewardStatus | null;
   kickRewardDetail: string | null;
-  /** Ticket multiplier for verified active Kick subscribers (1 = off). */
+  /** Ticket multiplier for verified active Kick and Twitch subscribers (1 = off). */
   subscriberMultiplier: number;
 }
 
@@ -61,7 +62,7 @@ export interface GiveawayEntryRecord {
   enteredAt: string;
   /** How the entry was made (null: before this was recorded). */
   source: EntrySource | null;
-  /** Verified as an active Kick subscriber when the entry was made (evidence: JSON, see the service). */
+  /** Verified as an active subscriber when the entry was made (evidence: JSON, see the service). */
   subscriberVerified: boolean;
   subscriberEvidence: string | null;
 }
@@ -109,7 +110,7 @@ export interface GiveawayWinnerRecord {
 }
 
 const COLUMNS = `id, prize, description, status, winner_count AS winnerCount, duration_minutes AS durationMinutes,
-  allow_kick AS allowKick, allow_discord AS allowDiscord, created_at AS createdAt, updated_at AS updatedAt,
+  allow_kick AS allowKick, allow_discord AS allowDiscord, allow_twitch AS allowTwitch, created_at AS createdAt, updated_at AS updatedAt,
   started_at AS startedAt, ends_at AS endsAt, closed_at AS closedAt, drawn_at AS drawnAt, cancelled_at AS cancelledAt,
   announce_at AS announceAt, announce_kind AS announceKind, announce_outcome AS announceOutcome,
   announce_detail AS announceDetail, discord_guild_id AS discordGuildId, discord_channel_id AS discordChannelId,
@@ -118,8 +119,8 @@ const COLUMNS = `id, prize, description, status, winner_count AS winnerCount, du
   kick_reward_tickets AS kickRewardTickets, kick_reward_title AS kickRewardTitle, kick_reward_id AS kickRewardId,
   kick_reward_status AS kickRewardStatus, kick_reward_detail AS kickRewardDetail, subscriber_multiplier AS subscriberMultiplier`;
 
-type Row = Omit<GiveawayRecord, 'allowKick' | 'allowDiscord'> & { allowKick: number; allowDiscord: number };
-const toRecord = (r: Row): GiveawayRecord => ({ ...r, allowKick: r.allowKick === 1, allowDiscord: r.allowDiscord === 1 });
+type Row = Omit<GiveawayRecord, 'allowKick' | 'allowDiscord' | 'allowTwitch'> & { allowKick: number; allowDiscord: number; allowTwitch: number };
+const toRecord = (r: Row): GiveawayRecord => ({ ...r, allowKick: r.allowKick === 1, allowDiscord: r.allowDiscord === 1, allowTwitch: r.allowTwitch === 1 });
 
 const ENTRY_COLUMNS = `id, giveaway_id AS giveawayId, platform, platform_user_id AS platformUserId, display_name AS displayName,
   entered_at AS enteredAt, source, subscriber_verified AS subscriberVerified, subscriber_evidence AS subscriberEvidence`;
@@ -197,6 +198,7 @@ export const giveawaysRepo = {
       | 'durationMinutes'
       | 'allowKick'
       | 'allowDiscord'
+      | 'allowTwitch'
       | 'createdAt'
       | 'endsAt'
       | 'discordGuildId'
@@ -212,8 +214,8 @@ export const giveawaysRepo = {
       db,
       `INSERT INTO giveaways (id, prize, description, status, winner_count, duration_minutes, allow_kick, allow_discord, created_at,
          updated_at, started_at, ends_at, discord_guild_id, discord_channel_id, discord_channel_name, kick_reward_cost,
-         kick_reward_tickets, kick_reward_title, subscriber_multiplier)
-         VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         kick_reward_tickets, kick_reward_title, subscriber_multiplier, allow_twitch)
+         VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       g.id,
       g.prize,
       g.description,
@@ -232,6 +234,7 @@ export const giveawaysRepo = {
       g.kickRewardTickets,
       g.kickRewardTitle,
       g.subscriberMultiplier,
+      g.allowTwitch ? 1 : 0,
     );
   },
 
@@ -265,6 +268,7 @@ export const giveawaysRepo = {
       | 'durationMinutes'
       | 'allowKick'
       | 'allowDiscord'
+      | 'allowTwitch'
       | 'updatedAt'
       | 'discordGuildId'
       | 'discordChannelId'
@@ -276,7 +280,7 @@ export const giveawaysRepo = {
       execute(
         db,
         `UPDATE giveaways SET prize = ?, description = ?, winner_count = ?, duration_minutes = ?, allow_kick = ?,
-           allow_discord = ?, updated_at = ?, discord_guild_id = ?, discord_channel_id = ?, discord_channel_name = ?
+           allow_discord = ?, allow_twitch = ?, updated_at = ?, discord_guild_id = ?, discord_channel_id = ?, discord_channel_name = ?
            WHERE id = ? AND status = ?
              AND (discord_message_id IS NULL OR (discord_channel_id IS ? AND discord_guild_id IS ?))`,
         d.prize,
@@ -285,6 +289,7 @@ export const giveawaysRepo = {
         d.durationMinutes,
         d.allowKick ? 1 : 0,
         d.allowDiscord ? 1 : 0,
+        d.allowTwitch ? 1 : 0,
         d.updatedAt,
         d.discordGuildId,
         d.discordChannelId,

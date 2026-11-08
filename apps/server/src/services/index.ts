@@ -53,6 +53,7 @@ import { TwitchSetupService } from '../twitch/twitch-setup-service';
 import { TwitchChatApi } from '../twitch/twitch-chat-api';
 import { TwitchChatService } from '../twitch/twitch-chat-service';
 import { TwitchCommandService } from '../twitch/twitch-command-service';
+import { TwitchDefaultCommandService } from '../twitch/twitch-default-commands';
 import { KickClipService } from '../kick/kick-clip-service';
 import { KickClipsApi } from '../kick/kick-clips-api';
 import { TimedMessageService } from '../community/timed-message-service';
@@ -70,6 +71,7 @@ export interface Services {
   twitch: TwitchSetupService;
   twitchChat: TwitchChatService;
   twitchCommands: TwitchCommandService;
+  twitchDefaults: TwitchDefaultCommandService;
   kickChat: KickChatService;
   kickCommands: KickCommandService;
   kickDefaults: KickDefaultCommandService;
@@ -352,6 +354,7 @@ export function createServices(opts: {
     now,
     logger: opts.logger.child({ module: 'giveaways' }),
     kick: kickChat,
+    twitch: twitchChat,
     kickRewards: kickChat,
     discordReadiness: async () => {
       const s = await discord!.state();
@@ -372,6 +375,8 @@ export function createServices(opts: {
     discordCredentials,
     discordBotName: () => bot.status().username ?? discordRepo.getApplication(opts.db)?.botUsername ?? null,
     kick: kickChat,
+    twitch: twitchChat,
+    twitchUserId: async (login) => twitchApi.userId(await twitchApp(), login),
     loyaltyLog: async () => loyalty?.logEntries() ?? [],
   });
   timedMessages = new TimedMessageService({
@@ -395,10 +400,21 @@ export function createServices(opts: {
   };
   // Your Twitch stream for Twitch commands' variables (the app access token, kept in memory).
   let twitchAppTokenCache: { token: string; expiresAt: number; clientId: string } | null = null;
-  const twitchChannelInfo = async (login: string) => {
+  const twitchApp = async () => {
     if (!twitchAppTokenCache || twitchAppTokenCache.expiresAt - 60_000 < now().getTime()) twitchAppTokenCache = await (adapters.twitch as TwitchAdapter).appAccessToken();
-    const [c] = await twitchApi.channelsByLogins(twitchAppTokenCache, [login]);
+    return twitchAppTokenCache;
+  };
+  const twitchChannelInfo = async (login: string) => {
+    const [c] = await twitchApi.channelsByLogins(await twitchApp(), [login]);
     return c ? { live: c.live, title: c.title, category: c.category, viewers: c.viewerCount, startedAt: c.startTime } : null;
+  };
+  /** A channel with its title and category, which Twitch's stream data only has while it's live. */
+  const twitchChannel = async (login: string) => {
+    const app = await twitchApp();
+    const [c] = await twitchApi.channelsByLogins(app, [login]);
+    if (!c) return null;
+    const details = c.live ? null : await twitchApi.channelDetails(app, c.broadcasterUserId);
+    return { ...c, title: details?.title ?? c.title, category: details?.category ?? c.category };
   };
   const kickWeb = new KickWebData({ now, fetch: opts.kickWebFetch ?? opts.fetch });
   // Kick default commands (!uptime, !so, !timeout…): answered through the same pipeline as custom commands.
@@ -440,6 +456,44 @@ export function createServices(opts: {
       .filter((c) => c.permission === 'everyone')
       .map((c) => c.trigger),
   ];
+  // Twitch default commands (!uptime, !so…): answered through the same pipeline as custom commands.
+  const twitchDefaults = new TwitchDefaultCommandService({
+    moderation: () => moderation!,
+    db: opts.db,
+    now,
+    logger: opts.logger.child({ module: 'twitch-default-commands' }),
+    customCommands,
+    mainChannel: () => twitchChat.mainChannel(),
+    streamInfo: async () => {
+      const login = twitchChat.mainChannel()?.slug;
+      const c = login ? await twitchChannel(login) : null;
+      return c ? { live: c.live, title: c.title, category: c.category, startedAt: c.startTime } : null;
+    },
+    channelInfo: async (login) => {
+      const c = await twitchChannel(login);
+      return c ? { login: c.slug, name: c.displayName, live: c.live, category: c.category } : null;
+    },
+    followedAt: async (who) => {
+      const userId = 'userId' in who ? who.userId : await twitchApi.userId(await twitchApp(), who.login);
+      if (!userId) return undefined;
+      return twitchChat.asMainAccount((auth, broadcasterId) => twitchApi.followedAt(auth, broadcasterId, userId));
+    },
+    updateStreamInfo: (patch) => twitchChat.asMainAccount((auth, broadcasterId) => twitchApi.updateChannel(auth, broadcasterId, patch)),
+    findCategory: async (name) => twitchApi.findCategory(await twitchApp(), name),
+    everyoneCommands: () => twitchEveryoneCommands(),
+  });
+  /** Triggers everyone may use in Twitch chat: !enter, the default commands that answer, and custom commands for everyone. */
+  const twitchEveryoneCommands = () => [
+    GIVEAWAY_ENTER.twitch,
+    ...twitchDefaults
+      .views()
+      .filter((d) => d.permission === 'everyone' && d.enabled && !d.inactiveReason)
+      .map((d) => d.trigger),
+    ...customCommands
+      .runnable('twitch')
+      .filter((c) => c.permission === 'everyone')
+      .map((c) => c.trigger),
+  ];
   variables = new CommandVariableService({
     db: opts.db,
     now,
@@ -458,10 +512,7 @@ export function createServices(opts: {
       platform === 'kick'
         ? kickEveryoneCommands()
         : platform === 'twitch'
-          ? customCommands
-              .runnable('twitch')
-              .filter((c) => c.permission === 'everyone')
-              .map((c) => c.trigger)
+          ? twitchEveryoneCommands()
           : commandAccess.apply([...builtIns, ...(loyalty?.slashCommands() ?? [])]).map((c) => `/${c.name}`).concat(customCommands.runnable('discord').map((c) => c.trigger)),
   });
   loyalty = new LoyaltyService({
@@ -600,7 +651,8 @@ export function createServices(opts: {
     kick,
     twitch,
     twitchChat,
-    twitchCommands: new TwitchCommandService({ logger: opts.logger.child({ module: 'twitch-commands' }), chat: twitchChat, commands: customCommands, variables, sleep: opts.sleep }),
+    twitchCommands: new TwitchCommandService({ logger: opts.logger.child({ module: 'twitch-commands' }), chat: twitchChat, commands: customCommands, variables, defaults: twitchDefaults, sleep: opts.sleep }),
+    twitchDefaults,
     kickChat,
     kickCommands: new KickCommandService({ logger: opts.logger.child({ module: 'kick-commands' }), chat: kickChat, commands: customCommands, variables, defaults: kickDefaults, sleep: opts.sleep }),
     kickDefaults,

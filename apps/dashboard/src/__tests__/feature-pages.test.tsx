@@ -158,7 +158,7 @@ describe('Discord Logging page', () => {
     expect(html.match(/<section class="card"/g)).toHaveLength(1);
     expect(html).toMatch(/<div class="form-actions"><button type="button"[^>]*disabled=""[^>]*>Save<\/button><\/div><\/section>$/);
     expect(t).not.toContain('Recently logged');
-    expect(t).not.toContain('Everything logged is also listed');
+    expect(t).toContain('Everything logged is also listed');
     for (const c of ['Moderation', 'Members', 'Messages', 'Server & roles', 'XP & Loyalty']) expect(t).toContain(c);
     for (const e of ['Bans', 'Timeouts', 'Joins', 'Deleted messages', 'Edited messages', 'Channels created, deleted or changed']) expect(t).toContain(e);
     for (const e of ['Level-ups', 'XP adjustments', 'Points adjustments', 'Rewards redeemed', 'Redemptions fulfilled or rejected', 'Level roles given (or refused)', 'Resets (a member, or the leaderboard)']) expect(t).toContain(e);
@@ -210,8 +210,8 @@ describe('Kick Notifications page', () => {
     };
     const t = text(renderToStaticMarkup(<KickNotificationsView s={s} />));
     expect(t).toMatch(/Retronix kick.com\/retronix → #live-alerts in Retro Server “Speedruns” · Retro Games Live — notification posted\. · deleted when the stream ends Live/);
-    expect(renderToStaticMarkup(<KickNotificationsView s={s} />)).toContain('title="CONDUIT checks every 60 seconds"');
-    expect(t).not.toContain('no rights over other channels');
+    expect(renderToStaticMarkup(<KickNotificationsView s={s} />)).toContain('CONDUIT checks Kick every 60 seconds while it’s running');
+    expect(t).toContain('public channel information; no rights over other channels');
   });
 });
 

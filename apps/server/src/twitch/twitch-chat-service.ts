@@ -12,13 +12,19 @@
  * main account), to the main account's channel, with user:write:chat. Never retried automatically (it could post
  * twice), except after a 401, which means Twitch rejected the token and posted nothing.
  *
+ * Moderation (dev.twitch.tv/docs/api/reference/): as the main account, which moderates its own channel. Bans, timeouts
+ * and unbans done on Twitch itself arrive on the same session (channel.ban, channel.unban), best effort: chat works
+ * either way.
+ *
  * Messages are kept in memory only (the last few, for the status view) and handed to subscribers (commands, timed
- * messages).
+ * messages, automated protection).
  */
 import { connectionsRepo, type ConnectionRecord, type Database } from '@conduit/database';
 import type { Logger } from '@conduit/logger';
 import {
   sendTwitchChatSchema,
+  TWITCH_MODERATE_EVENTS_SCOPE,
+  type TwitchChatModes,
   type TwitchChatMessageView,
   type TwitchChatReceiveStatus,
   type TwitchChatState,
@@ -28,7 +34,8 @@ import { writeAudit } from '../audit';
 import { AppError } from '../errors';
 import { parseInput } from '../validation';
 import type { ConnectionService } from '../app/connection-service';
-import { CHAT_MESSAGE_EVENT, TwitchChatApiError, type TwitchChatApi } from './twitch-chat-api';
+import { TwitchApiError } from './twitch-api';
+import { BAN_EVENTS, CHAT_MESSAGE_EVENT, TwitchChatApiError, type TwitchChatApi, type TwitchModerator, type TwitchUserAuth } from './twitch-chat-api';
 import type { TwitchCredentials } from './twitch-credentials';
 import { TwitchEventSubSession, type EventSubNotification } from './twitch-eventsub';
 
@@ -54,6 +61,23 @@ export interface TwitchChatMessage extends TwitchChatMessageView {
   badgeTypes: string[];
   /** Subscriber months from the sender's subscriber badge, when they have one. */
   subscriberMonths: number | null;
+  /** The sender's login (their display name can be in any script). */
+  senderLogin: string;
+  /** The text with each emote as [emote:0:e], when it has emotes: names like LUL aren't capitals or words. */
+  checkText?: string;
+}
+
+/** A ban, timeout (a ban with an end) or unban done in the channel, from channel.ban and channel.unban. */
+export interface TwitchBanEvent {
+  id: string;
+  kind: 'ban' | 'unban';
+  broadcasterUserId: string;
+  userId: string;
+  userName: string;
+  moderatorName: string | null;
+  reason: string | null;
+  at: string;
+  expiresAt: string | null;
 }
 
 export interface TwitchChatServiceOptions {
@@ -74,6 +98,9 @@ export class TwitchChatService {
   private received = 0;
   private readonly recent: TwitchChatMessage[] = [];
   private readonly listeners = new Set<(m: TwitchChatMessage) => void>();
+  private readonly banListeners = new Set<(b: TwitchBanEvent) => void>();
+  private banEventsOn = false;
+  private banProblem: string | null = null;
   private session: TwitchEventSubSession | null = null;
   private running: Promise<void> | null = null;
   private again = false;
@@ -104,6 +131,17 @@ export class TwitchChatService {
   onMessage(listener: (m: TwitchChatMessage) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Bans, timeouts and unbans done in the channel. Returns an unsubscribe function. */
+  onBan(listener: (b: TwitchBanEvent) => void): () => void {
+    this.banListeners.add(listener);
+    return () => this.banListeners.delete(listener);
+  }
+
+  /** Whether bans and timeouts done on Twitch reach CONDUIT, and why not. */
+  banEvents(): { ok: boolean; problem: string | null } {
+    return { ok: this.banEventsOn, problem: this.banEventsOn ? null : this.banProblem };
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -186,9 +224,84 @@ export class TwitchChatService {
       return this.fail(err, primary);
     }
     if (this.session !== session) return;
+    await this.subscribeBans(sessionId, primary, clientId);
+    if (this.session !== session) return;
     this.retries = 0;
     this.set('connected', null);
     this.o.logger.info('twitch chat connected');
+  }
+
+  /** Bans and timeouts for Twitch Moderation's Logs use the same session. Best effort: chat works either way. */
+  private async subscribeBans(sessionId: string, primary: ConnectionRecord, clientId: string): Promise<void> {
+    this.banEventsOn = false;
+    this.banProblem = null;
+    if (!scopesOf(primary).includes(TWITCH_MODERATE_EVENTS_SCOPE)) {
+      this.banProblem = 'Reconnect your main Twitch account to see moderation done on Twitch itself in the Logs.';
+      return;
+    }
+    try {
+      for (const event of BAN_EVENTS) {
+        await this.withPrimaryToken((token) => this.o.api.subscribeChannelEvent({ token, clientId }, { sessionId, broadcasterUserId: primary.externalAccountId, event }));
+      }
+      this.banEventsOn = true;
+    } catch (err) {
+      this.o.logger.warn('twitch ban subscription failed', { kind: err instanceof TwitchChatApiError ? err.kind : 'unknown' });
+      this.banProblem = 'Twitch didn’t accept the ban and timeout subscription, so moderation done on Twitch itself isn’t in the Logs.';
+    }
+  }
+
+  // ── moderation (main account = channel owner) ──────────────────────────────
+
+  /** The main account, as moderation acts with it: its user id (= the channel's broadcaster id), name and scopes. */
+  moderator(): { userId: string; name: string; channel: string; scopes: string[] } | null {
+    const primary = this.primaryRecord();
+    if (!primary) return null;
+    return { userId: primary.externalAccountId, name: primary.accountName, channel: primary.accountHandle ?? primary.accountName, scopes: scopesOf(primary) };
+  }
+
+  private moderate<T>(fn: (auth: TwitchUserAuth, m: TwitchModerator) => Promise<T>): Promise<T> {
+    return this.asMainAccount((auth, id) => fn(auth, { broadcasterId: id, moderatorId: id }));
+  }
+
+  /** Bans (durationSeconds null) or times out a user in the main channel. */
+  moderationBan(userId: string, durationSeconds: number | null, reason: string | null): Promise<void> {
+    return this.moderate((auth, m) => this.o.api.ban(auth, m, { userId, durationSeconds, reason }));
+  }
+
+  moderationUnban(userId: string): Promise<void> {
+    return this.moderate((auth, m) => this.o.api.unban(auth, m, userId));
+  }
+
+  moderationDeleteMessage(messageId: string): Promise<void> {
+    return this.moderate((auth, m) => this.o.api.deleteMessage(auth, m, messageId));
+  }
+
+  isModerator(userId: string): Promise<boolean> {
+    return this.asMainAccount((auth, id) => this.o.api.isModerator(auth, id, userId));
+  }
+
+  chatModes(): Promise<TwitchChatModes> {
+    return this.asMainAccount((auth, id) => this.o.api.chatModes(auth, id));
+  }
+
+  updateChatModes(modes: TwitchChatModes): Promise<TwitchChatModes> {
+    return this.moderate((auth, m) => this.o.api.updateChatModes(auth, m, modes));
+  }
+
+  shieldMode(): Promise<boolean> {
+    return this.moderate((auth, m) => this.o.api.shieldMode(auth, m));
+  }
+
+  setShieldMode(active: boolean): Promise<boolean> {
+    return this.moderate((auth, m) => this.o.api.setShieldMode(auth, m, active));
+  }
+
+  /** A Twitch API call as the main account (default commands), with its token and id. */
+  async asMainAccount<T>(fn: (auth: { token: string; clientId: string }, broadcasterId: string) => Promise<T>): Promise<T> {
+    const clientId = this.o.credentials.clientId();
+    const primary = this.primaryRecord();
+    if (!clientId || !primary) throw new TwitchChatApiError('unauthorized', 'The main Twitch account is not connected');
+    return this.withPrimaryToken((token) => fn({ token, clientId }, primary.externalAccountId));
   }
 
   /** Runs a Twitch API call with the main account's token, refreshing it once if Twitch rejects it. */
@@ -199,7 +312,7 @@ export class TwitchChatService {
       try {
         return await fn(auth.token);
       } catch (err) {
-        if (err instanceof TwitchChatApiError && err.kind === 'unauthorized' && attempt === 0) {
+        if ((err instanceof TwitchChatApiError || err instanceof TwitchApiError) && err.kind === 'unauthorized' && attempt === 0) {
           auth = await this.o.connections.accessToken('twitch', 'primary', { forceRefresh: true });
           continue;
         }
@@ -247,6 +360,11 @@ export class TwitchChatService {
 
   /** Twitch ended the subscription itself: access was revoked, or the account is gone. Not retried automatically. */
   private onRevoked(session: TwitchEventSubSession, type: string, status: string): void {
+    if (this.session === session && BAN_EVENTS.some((e) => e.type === type)) {
+      this.banEventsOn = false;
+      this.banProblem = 'Twitch ended the ban and timeout subscription, so moderation done on Twitch itself isn’t in the Logs. Select Retry on Twitch chat.';
+      return;
+    }
     if (this.session !== session || type !== CHAT_MESSAGE_EVENT.type) return;
     this.o.logger.warn('twitch chat subscription revoked', { status });
     this.dropSession();
@@ -281,6 +399,7 @@ export class TwitchChatService {
   private dropSession(): void {
     const s = this.session;
     this.session = null;
+    this.banEventsOn = false;
     s?.close();
   }
 
@@ -292,6 +411,7 @@ export class TwitchChatService {
   // ── receiving ─────────────────────────────────────────────────────────────
 
   private handleNotification(n: EventSubNotification): void {
+    if (BAN_EVENTS.some((e) => e.type === n.type && e.version === n.version)) return this.handleBan(n);
     if (n.type !== CHAT_MESSAGE_EVENT.type || n.version !== CHAT_MESSAGE_EVENT.version) return;
     const receivedAt = this.o.now().toISOString();
     const m = parseTwitchChatMessage(n.event, receivedAt);
@@ -309,6 +429,23 @@ export class TwitchChatService {
         listener(m);
       } catch (err) {
         this.o.logger.error('twitch chat listener failed', { err });
+      }
+    }
+  }
+
+  /** A ban or unban in the main channel → the ban listeners (Twitch Moderation's Logs). */
+  private handleBan(n: EventSubNotification): void {
+    const b = parseTwitchBan(n.event, n.messageId, n.type === 'channel.unban' ? 'unban' : 'ban', this.o.now().toISOString());
+    const primary = this.primaryRecord();
+    if (!b || !primary || b.broadcasterUserId !== primary.externalAccountId) {
+      this.o.logger.info('twitch ban event ignored', { reason: b ? 'another channel' : 'malformed' });
+      return;
+    }
+    for (const listener of this.banListeners) {
+      try {
+        listener(b);
+      } catch (err) {
+        this.o.logger.error('twitch ban listener failed', { err });
       }
     }
   }
@@ -400,10 +537,10 @@ export class TwitchChatService {
     return p ? (p.accountHandle ?? p.accountName) : null;
   }
 
-  /** The main Twitch channel: its login (twitch.tv/<login>) and display name, when the main account is connected. */
-  mainChannel(): { slug: string | null; name: string | null } | null {
+  /** The main Twitch channel: its login (twitch.tv/<login>), display name and granted scopes, when the main account is connected. */
+  mainChannel(): { slug: string | null; name: string | null; scopes: string[] } | null {
     const p = this.primaryRecord();
-    return p ? { slug: p.accountHandle ?? null, name: p.accountName ?? p.accountHandle ?? null } : null;
+    return p ? { slug: p.accountHandle ?? null, name: p.accountName ?? p.accountHandle ?? null, scopes: scopesOf(p) } : null;
   }
 
   /** Whether this exact text was posted by CONDUIT in the last minute. */
@@ -538,7 +675,8 @@ export function parseTwitchChatMessage(payload: unknown, receivedAt: string): Tw
   const messageId = str(p.message_id, 100);
   const content = str(message?.text, 2000);
   const senderUserId = numericId(p.chatter_user_id);
-  const senderUsername = str(p.chatter_user_name, 64) || str(p.chatter_user_login, 64);
+  const senderLogin = str(p.chatter_user_login, 64);
+  const senderUsername = str(p.chatter_user_name, 64) || senderLogin;
   const broadcasterUserId = numericId(p.broadcaster_user_id);
   if (!messageId || !/^[A-Za-z0-9_-]{1,100}$/.test(messageId) || !content || !senderUserId || !senderUsername || !broadcasterUserId) return null;
   const source = p.source_broadcaster_user_id;
@@ -550,6 +688,8 @@ export function parseTwitchChatMessage(payload: unknown, receivedAt: string): Tw
   const sub = badges.find((b) => b?.set_id === 'subscriber' || b?.set_id === 'founder');
   const months = Number(sub?.info);
   const color = str(p.color, 9);
+  const fragments = Array.isArray(message?.fragments) ? (message.fragments as Array<{ type?: unknown; text?: unknown }>) : [];
+  const hasEmotes = fragments.some((f) => f?.type === 'emote');
   return {
     messageId,
     content,
@@ -561,5 +701,29 @@ export function parseTwitchChatMessage(payload: unknown, receivedAt: string): Tw
     broadcasterUserId,
     badgeTypes,
     subscriberMonths: Number.isInteger(months) && months > 0 ? Math.min(months, 1200) : null,
+    senderLogin: senderLogin ?? senderUsername,
+    ...(hasEmotes ? { checkText: fragments.map((f) => (f?.type === 'emote' ? '[emote:0:e]' : typeof f?.text === 'string' ? f.text : '')).join('').slice(0, 2000) } : {}),
+  };
+}
+
+/** channel.ban or channel.unban v1 → a ban event, defensively (unknown fields ignored, ids must look like Twitch's). */
+export function parseTwitchBan(payload: unknown, id: string, kind: 'ban' | 'unban', receivedAt: string): TwitchBanEvent | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const p = payload as Record<string, unknown>;
+  const broadcasterUserId = numericId(p.broadcaster_user_id);
+  const userId = numericId(p.user_id);
+  const userName = str(p.user_name, 64) || str(p.user_login, 64);
+  if (!broadcasterUserId || !userId || !userName) return null;
+  const date = (v: unknown): string | null => (typeof v === 'string' && Number.isFinite(Date.parse(v)) ? v : null);
+  return {
+    id,
+    kind,
+    broadcasterUserId,
+    userId,
+    userName,
+    moderatorName: str(p.moderator_user_name, 64) || str(p.moderator_user_login, 64),
+    reason: str(p.reason, 200)?.trim() || null,
+    at: date(p.banned_at) ?? receivedAt,
+    expiresAt: p.is_permanent === true ? null : date(p.ends_at),
   };
 }

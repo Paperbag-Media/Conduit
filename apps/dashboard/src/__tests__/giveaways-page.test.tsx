@@ -42,7 +42,7 @@ function giveaway(over: Partial<GiveawayView> = {}): GiveawayView {
     drawnAt: null,
     cancelledAt: null,
     entryCount: 0,
-    entriesByPlatform: { kick: 0, discord: 0 },
+    entriesByPlatform: { kick: 0, twitch: 0, discord: 0 },
     ticketCount: 0,
     subscriberMultiplier: 1,
     verifiedSubscribers: 0,
@@ -59,6 +59,7 @@ const state = (giveaways: GiveawayView[], over: Partial<GiveawaysState> = {}): G
   giveaways,
   entry: {
     kick: { command: '!enter', ready: true, note: null },
+    twitch: { command: '!enter', ready: true, note: null },
     discord: { command: '🎉 Enter Giveaway button', ready: false, note: 'The Discord bot is not connected, so the giveaway buttons don’t respond right now.' },
   },
   discordChannelDefault: null,
@@ -92,7 +93,7 @@ describe('Giveaways', () => {
       state([
         giveaway({
           entryCount: 3,
-          entriesByPlatform: { kick: 2, discord: 1 },
+          entriesByPlatform: { kick: 2, twitch: 0, discord: 1 },
           ticketCount: 7,
           subscriberMultiplier: 2,
           verifiedSubscribers: 1,
@@ -103,7 +104,7 @@ describe('Giveaways', () => {
     expect(t).toMatch(/Current giveaway Steam key Running/);
     expect(t).toContain('Entry on: Kick and Discord');
     expect(t).toContain('Time remaining: until you end entries');
-    expect(t).toMatch(/Entries: 3 \(Kick 2 · Discord 1\) · Tickets: 7 · 2× for verified Kick subscribers \(1\)/);
+    expect(t).toMatch(/Entries: 3 \(Kick 2 · Discord 1\) · Tickets: 7 · 2× for verified subscribers \(1\)/);
     expect(t).toMatch(/Channel Points reward: “Bonus ticket” · 500 points for 1 bonus ticket · 2 accepted, 1 rejected · redeemable on Kick/);
     expect(t).toMatch(/End entries Draw winners Edit Cancel/);
   });
@@ -176,7 +177,7 @@ describe('Giveaways', () => {
     expect(form).toContain('Start Giveaway');
     expect(form).not.toMatch(/Save draft|Create giveaway/);
     expect(form).toContain('Channel Points reward for bonus tickets');
-    expect(form).toContain('Kick subscribers No multiplier 2× tickets');
+    expect(form).toContain('Subscribers No multiplier 2× tickets');
     const unavailable = text(
       renderToStaticMarkup(
         <GiveawayEditor initial={null} defaultChannel={null} kickRewards={{ available: false, problem: 'Select Reauthorize main account.' }} onCancel={noop} onSaved={noop} />,
@@ -212,7 +213,7 @@ describe('Kick chat messages (editable before sending)', () => {
     const html = renderToStaticMarkup(<KickGiveawayMessagesCard saved={{ ...KICK_GIVEAWAY_MESSAGE_DEFAULTS }} />);
     expect(html.match(/aria-expanded="false"/g)).toHaveLength(6);
     expect(html.match(/class="kmsg-body" hidden=""/g)).toHaveLength(6);
-    expect(text(html)).not.toContain('Saving sends nothing');
+    expect(text(html)).toContain('Saving sends nothing');
     expect(t).not.toMatch(/{tickets?}|{odds}|{entries}/);
   });
 

@@ -6,19 +6,23 @@
  *   (Manage Messages), member lookup.
  * - Kick (main account token): timeout / ban / unban (scope moderation:ban), delete a chat message (scope
  *   moderation:chat_message:manage), user lookup by username.
- * Actions are started by automated protection (Kick) or by CONDUIT's Discord moderation commands (/timeout, /untimeout,
- * /ban, /unban); the dashboard configures protection and shows logs, and has no manual action controls.
- * The history records actions taken through CONDUIT, plus bans and timeouts done on Kick itself (Kick's moderation.banned
- * events); Discord moderation done outside CONDUIT comes from the audit log, kept separately.
- * Automated protection reads Kick chat only (signed chat events). Discord message content would need the privileged
- * Message Content intent, which CONDUIT doesn't use.
+ * - Twitch (main account token): timeout / ban / unban (scope moderator:manage:banned_users), delete a chat message
+ *   (scope moderator:manage:chat_messages).
+ * Actions are started by automated protection (Kick, Twitch), by chat commands, or by CONDUIT's Discord moderation
+ * commands (/timeout, /untimeout, /ban, /unban); the dashboard configures protection and shows logs, and has no manual
+ * action controls.
+ * The history records actions taken through CONDUIT, plus bans and timeouts done on Kick or Twitch itself (Kick's
+ * moderation.banned events, Twitch's channel.ban and channel.unban); Discord moderation done outside CONDUIT comes from
+ * the audit log, kept separately.
+ * Automated protection reads Kick and Twitch chat. Discord message content would need the privileged Message Content
+ * intent, which CONDUIT doesn't use.
  */
 import { z } from 'zod';
 import type { DiscordLogEntryView } from '../discord/discord-logging';
 import type { LoyaltyLogEntry } from '../discord/loyalty';
 import { regexProblem, type ProtectionEventView } from '../discord/discord-protection';
 
-export const MODERATION_PLATFORMS = ['discord', 'kick'] as const;
+export const MODERATION_PLATFORMS = ['discord', 'kick', 'twitch'] as const;
 export type ModerationPlatform = (typeof MODERATION_PLATFORMS)[number];
 
 export const MODERATION_ACTIONS = ['timeout', 'untimeout', 'ban', 'unban', 'delete_message'] as const;
@@ -32,10 +36,11 @@ export const MODERATION_ACTION_LABEL: Record<ModerationActionKind, string> = {
   delete_message: 'Delete message',
 };
 
-/** Timeout limits: Discord up to 28 days; Kick 1 minute to 7 days (whole minutes). */
+/** Timeout limits: Discord up to 28 days; Kick 1 minute to 7 days (whole minutes); Twitch 1 second to 14 days. */
 export const TIMEOUT_LIMITS: Record<ModerationPlatform, { minSeconds: number; maxSeconds: number }> = {
   discord: { minSeconds: 60, maxSeconds: 28 * 24 * 3600 },
   kick: { minSeconds: 60, maxSeconds: 7 * 24 * 3600 },
+  twitch: { minSeconds: 1, maxSeconds: 14 * 24 * 3600 },
 };
 
 export const MODERATION_REASON_MAX = 100;
@@ -122,7 +127,35 @@ const kickAction = z.discriminatedUnion('action', [
   }),
 ]);
 
-export const moderationActionSchema = z.union([discordAction, kickAction]);
+const twitchTarget = {
+  userId: z.string().trim().regex(/^\d{1,20}$/, 'Choose a Twitch user'),
+  username: z.string().trim().regex(/^[A-Za-z0-9_]{1,25}$/, 'Invalid Twitch username'),
+};
+
+const twitchAction = z.discriminatedUnion('action', [
+  z.strictObject({
+    platform: z.literal('twitch'),
+    action: z.literal('timeout'),
+    ...twitchTarget,
+    durationSeconds: z
+      .number()
+      .int()
+      .min(TIMEOUT_LIMITS.twitch.minSeconds, 'At least 1 second')
+      .max(TIMEOUT_LIMITS.twitch.maxSeconds, 'Twitch timeouts last at most 14 days'),
+    reason,
+  }),
+  z.strictObject({ platform: z.literal('twitch'), action: z.literal('ban'), ...twitchTarget, reason }),
+  z.strictObject({ platform: z.literal('twitch'), action: z.literal('unban'), ...twitchTarget, reason }),
+  z.strictObject({
+    platform: z.literal('twitch'),
+    action: z.literal('delete_message'),
+    ...twitchTarget,
+    messageId: z.string().trim().regex(/^[0-9A-Za-z_-]{1,64}$/, 'Choose a message from recent chat'),
+    reason,
+  }),
+]);
+
+export const moderationActionSchema = z.union([discordAction, kickAction, twitchAction]);
 export type ModerationActionInput = z.input<typeof moderationActionSchema>;
 export type ModerationAction = z.output<typeof moderationActionSchema>;
 
@@ -139,7 +172,7 @@ export const moderationLookupSchema = z.discriminatedUnion('platform', [
 ]);
 
 export interface ModerationLookupResult {
-  platform: ModerationPlatform;
+  platform: 'discord' | 'kick';
   userId: string;
   username: string;
   displayName: string | null;
@@ -190,6 +223,51 @@ export interface KickModerationState {
   chat: { status: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'permission_required'; problem: string | null };
   automod: AutomodState;
   history: ModerationRecordView[];
+}
+
+/** Automated protection on one chat platform, as the Moderation pages show it. */
+export interface ChatProtectionState {
+  settings: AutomodSettings;
+  /** Actions the platform can perform for automated protection now (from the main account's scopes). */
+  actions: Record<AutomodAction, ModerationCapability>;
+  raid: RaidState;
+  /** Messages checked and matched since the backend started (not persisted). */
+  stats: { checked: number; matched: number; since: string };
+}
+
+/** The Twitch Moderation page: automated protection and Twitch logs (chat modes load separately: they ask Twitch). */
+export interface TwitchModerationState {
+  connected: boolean;
+  problem: string | null;
+  accountName: string | null;
+  channel: string | null;
+  /** Whether chat is being received (protection only sees messages while connected). */
+  chat: { status: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'permission_required'; problem: string | null };
+  protection: ChatProtectionState;
+  /** Whether bans and timeouts done on Twitch itself reach CONDUIT (channel.ban and channel.unban), and why not. */
+  moderationEvents: { ok: boolean; problem: string | null };
+  history: ModerationRecordView[];
+}
+
+/** Twitch's own chat modes, which apps can change (Kick's can't be). */
+export const twitchChatModesSchema = z.strictObject({
+  slowMode: z.boolean(),
+  /** Seconds between a chatter's messages. */
+  slowSeconds: z.number().int().min(3, 'At least 3 seconds').max(120, 'At most 2 minutes'),
+  followersOnly: z.boolean(),
+  /** How long someone must have followed (0: any follower). */
+  followerMinutes: z.number().int().min(0, 'At least 0 minutes').max(129_600, 'At most 3 months (129600 minutes)'),
+  subscribersOnly: z.boolean(),
+  emoteOnly: z.boolean(),
+  uniqueChat: z.boolean(),
+});
+export type TwitchChatModes = z.output<typeof twitchChatModesSchema>;
+
+/** Twitch's chat modes and Shield Mode right now (null with the reason when they can't be read). */
+export interface TwitchChatModesState {
+  modes: TwitchChatModes | null;
+  shieldMode: boolean | null;
+  problem: string | null;
 }
 
 /** The Discord Moderation page: what automated protection can do on Discord, the moderation commands, and Discord logs. */
@@ -247,8 +325,8 @@ export interface ModerationRecordView {
   durationSeconds: number | null;
   reason: string | null;
   /**
-   * manual = started by a person (a Discord moderation command, or the dashboard before Phase 10.1); automod = automated
-   * protection; platform = done on Kick itself (Kick's own buttons or another bot), from Kick's ban and timeout events.
+   * manual = started by a person (a moderation command, or the dashboard before Phase 10.1); automod = automated
+   * protection; platform = done on Kick or Twitch itself (their own buttons or another bot), from their ban events.
    */
   source: 'manual' | 'automod' | 'platform';
   /** Who started it: e.g. "modname via /ban" for a Discord command, or the account used. */
@@ -258,7 +336,7 @@ export interface ModerationRecordView {
   detail: string | null;
 }
 
-// ── automated protection (Kick) ──────────────────────────────────────────────
+// ── automated protection (Kick and Twitch) ───────────────────────────────────
 
 /** The checks, in the order they're tried (blocked words first; flooding and repeats need the user's recent messages). */
 export const AUTOMOD_RULES = ['blocked_terms', 'links', 'caps', 'emotes', 'symbols', 'long_message', 'repeat', 'spam'] as const;
@@ -266,7 +344,7 @@ export type AutomodRule = (typeof AUTOMOD_RULES)[number];
 /** As stored with what protection did: a check, or raid mode. */
 export type AutomodRecordRule = AutomodRule | 'raid';
 
-/** What to do when a rule matches. "log" records it in the history and does nothing on Kick. */
+/** What to do when a rule matches. "log" records it in the history and does nothing in chat. */
 export const AUTOMOD_ACTIONS = ['log', 'delete_message', 'timeout'] as const;
 export type AutomodAction = (typeof AUTOMOD_ACTIONS)[number];
 
@@ -314,11 +392,11 @@ const site = z
 
 export const automodSettingsSchema = z.strictObject({
   enabled: z.boolean(),
-  /** Moderators and the broadcaster are never acted on (Kick badges from the signed event). */
+  /** Moderators and the broadcaster are never acted on (their badges on the chat event). */
   exemptModerators: z.boolean(),
   /**
-   * Kick usernames never checked (e.g. other bots you trust). Matched case-insensitively against the sender's name on
-   * the signed event. Optional so settings saved before this existed still load.
+   * Usernames never checked (e.g. other bots you trust). Matched case-insensitively against the sender's name on the
+   * chat event. Optional so settings saved before this existed still load.
    */
   ignoredUsers: z
     .array(
@@ -326,7 +404,7 @@ export const automodSettingsSchema = z.strictObject({
         .string()
         .trim()
         .transform((s) => s.replace(/^@/, '').toLowerCase())
-        .pipe(z.string().min(1).max(64).regex(/^[a-z0-9_.-]+$/, 'Kick usernames use letters, numbers, "_", "-" and "."')),
+        .pipe(z.string().min(1).max(64).regex(/^[a-z0-9_.-]+$/, 'Usernames use letters, numbers, "_", "-" and "."')),
     )
     .max(AUTOMOD_IGNORED_MAX, `At most ${AUTOMOD_IGNORED_MAX} ignored users`)
     .transform((list) => [...new Set(list)])
@@ -373,7 +451,7 @@ export const automodSettingsSchema = z.strictObject({
   emotes: z
     .strictObject({
       enabled: z.boolean(),
-      /** More than this many emotes (Kick emotes and emoji) in one message. */
+      /** More than this many emotes (the platform's emotes and emoji) in one message. */
       maxEmotes: z.number().int().min(1, 'At least 1').max(100, 'At most 100'),
       action: automodActionSchema,
       timeoutMinutes,
@@ -418,7 +496,8 @@ export const automodSettingsSchema = z.strictObject({
   /**
    * Raid mode: when many first-time chatters arrive at once, CONDUIT is stricter with them for a while — their messages
    * with a link, or that any check matches (even one set to Log only), are deleted (or they're timed out). Optionally
-   * the chatbot says so in chat. (Kick's own chat modes, like slow or followers-only, can't be changed by apps.)
+   * the chatbot says so in chat. (Kick's own chat modes, like slow or followers-only, can't be changed by apps; Twitch's
+   * are on Twitch Moderation → Chat Modes.)
    */
   raid: z
     .strictObject({
@@ -456,13 +535,16 @@ export const AUTOMOD_DEFAULTS: AutomodSettings = automodSettingsSchema.parse({
   spam: { enabled: true, maxMessages: 8, windowSeconds: 10, action: 'log', timeoutMinutes: 1 },
 });
 
+/** Twitch's defaults: the same, with links to Twitch allowed. */
+export const TWITCH_AUTOMOD_DEFAULTS: AutomodSettings = { ...AUTOMOD_DEFAULTS, links: { ...AUTOMOD_DEFAULTS.links, allowedSites: ['twitch.tv'] } };
+
 /** Raid mode right now. */
 export interface RaidState {
   /** Raid mode is on until then (null: off). */
   activeUntil: string | null;
   /** Raid mode can't start until CONDUIT has learned your regulars (it needs to have seen enough chat first). */
   learning: boolean;
-  /** Different chatters CONDUIT knows in your Kick chat. */
+  /** Different chatters CONDUIT knows in your chat. */
   knownChatters: number;
 }
 
@@ -481,7 +563,7 @@ export interface AutomodState {
 
 // ── the checks (pure; the backend runs them on each chat message) ────────────
 
-/** Kick writes emotes into the text as [emote:ID:NAME]. */
+/** Kick writes emotes into the text as [emote:ID:NAME]; Twitch's are put in the same form before they're checked. */
 const KICK_EMOTE = /\[emote:\d+:[^\]\s]{1,64}\]/g;
 const EMOJI = /\p{Extended_Pictographic}/gu;
 /** A link: with http(s)://, www., or a domain with a common top-level domain. */
@@ -507,7 +589,7 @@ export function disallowedLinks(text: string, allowedSites: string[]): string[] 
 }
 
 /** The first text check a message trips (blocked words aside), with what it found; null when none. */
-export function kickTextCheck(text: string, s: AutomodSettings): { rule: Exclude<AutomodRule, 'blocked_terms' | 'repeat' | 'spam'>; detail: string } | null {
+export function chatTextCheck(text: string, s: AutomodSettings): { rule: Exclude<AutomodRule, 'blocked_terms' | 'repeat' | 'spam'>; detail: string } | null {
   if (s.links.enabled) {
     const bad = disallowedLinks(text, s.links.allowedSites);
     if (bad.length) return { rule: 'links', detail: `Posted a link (${bad[0]!.slice(0, 60)}).` };
@@ -544,13 +626,13 @@ export function kickTextCheck(text: string, s: AutomodSettings): { rule: Exclude
 // ── one user's history (click a name in the Logs) ────────────────────────────
 
 export const userHistorySchema = z.strictObject({
-  platform: z.enum(['kick', 'discord']),
+  platform: z.enum(['kick', 'twitch', 'discord']),
   userId: z.string().regex(/^\d{1,25}$/, 'Invalid user id'),
 });
 
-/** Everything recorded for one person on one platform: Kick's Logs, or Discord's whole Moderation log. */
+/** Everything recorded for one person on one platform: Kick's or Twitch's Logs, or Discord's whole Moderation log. */
 export interface ModerationUserHistory {
-  platform: 'kick' | 'discord';
+  platform: 'kick' | 'twitch' | 'discord';
   userId: string;
   history: ModerationRecordView[];
   serverHistory: DiscordServerModerationView[];

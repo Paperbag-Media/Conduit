@@ -14,12 +14,13 @@
  */
 import type { ChatCommandRecord } from '@conduit/database';
 import type { Logger } from '@conduit/logger';
-import { renderCommand, type CommandRun } from '@conduit/shared';
+import { renderCommand, type ChatDefaultCommandDefinition, type CommandRun } from '@conduit/shared';
 import type { CommandVariableService } from '../community/command-variable-service';
 import { chatAllows, deniedMessage, twitchRoles } from '../community/command-access';
 import type { CustomCommandService } from '../community/custom-command-service';
 import { parseCommand } from '../kick/kick-command-service';
 import type { TwitchChatMessage, TwitchChatService } from './twitch-chat-service';
+import type { TwitchDefaultCommandService } from './twitch-default-commands';
 
 const QUEUE_LIMIT = 20;
 const REMEMBERED_MESSAGES = 1000;
@@ -31,6 +32,8 @@ export interface TwitchCommandServiceOptions {
   chat: Pick<TwitchChatService, 'onMessage' | 'sendResult' | 'msUntilNextSend' | 'chatbotIdentity' | 'wasRecentlySent' | 'mainChannelName'>;
   commands: CustomCommandService;
   variables: CommandVariableService;
+  /** Built-in commands (!uptime, !so…); a custom command with the same trigger answers instead. */
+  defaults?: TwitchDefaultCommandService;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -64,7 +67,11 @@ export class TwitchCommandService {
       const parsed = parseCommand(m.content);
       if (!parsed) return;
       const command = this.o.commands.findRunnable('twitch', parsed.trigger);
-      if (!command) return;
+      if (!command) {
+        const builtIn = this.o.defaults?.find(parsed.trigger);
+        if (builtIn) this.onDefault(builtIn, m, parsed.args);
+        return;
+      }
 
       // Permission, from the event (chatter id vs channel owner, Twitch's badges). Blocked silently in chat.
       if (!chatAllows(command.permission, twitchRoles({ userId: m.senderUserId, badgeTypes: m.badgeTypes }, m.broadcasterUserId))) {
@@ -82,6 +89,35 @@ export class TwitchCommandService {
       // A command problem must never break the chat feed.
       this.o.logger.error('twitch command handling failed', { err });
     }
+  }
+
+  /** A default command: the same permission check (silent when refused) and queue as custom commands. */
+  private onDefault(d: ChatDefaultCommandDefinition, m: TwitchChatMessage, args: string): void {
+    const defaults = this.o.defaults!;
+    const roles = twitchRoles({ userId: m.senderUserId, badgeTypes: m.badgeTypes }, m.broadcasterUserId);
+    if (!chatAllows(d.permission, roles)) return defaults.record(d.trigger, 'blocked', deniedMessage('twitch', d.permission));
+    const privileged = chatAllows('moderator', roles);
+    const admission = defaults.admit(d, privileged);
+    if (!admission.ok) return defaults.record(d.trigger, 'blocked', `On cooldown (${admission.remainingSeconds} s left).`);
+    if (this.queue.length >= QUEUE_LIMIT) {
+      admission.release();
+      return defaults.record(d.trigger, 'failed', 'Not sent: too many commands at once.');
+    }
+    void (async () => {
+      try {
+        const reply = await defaults.run(d, { user: m.senderUsername, userId: m.senderUserId, args, privileged });
+        if (!reply) {
+          admission.release();
+          return;
+        }
+        this.queue.push({ reply, release: admission.release, record: (o, detail) => defaults.record(d.trigger, o, detail) });
+        void this.work();
+      } catch (err) {
+        admission.release();
+        this.o.logger.error('twitch default command failed', { trigger: d.trigger, err });
+        defaults.record(d.trigger, 'failed', 'Not sent: the reply couldn’t be prepared.');
+      }
+    })();
   }
 
   /** The chatbot's own messages (loop protection): a separate bot by its id; the main account by its recent text. */

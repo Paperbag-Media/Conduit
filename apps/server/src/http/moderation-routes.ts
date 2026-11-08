@@ -5,7 +5,7 @@ import type { Services } from '../services';
 /**
  * /api/moderation — moderation for the desktop dashboard. Protected by the local access key (applied in app.ts), like
  * every /api route: only the desktop app that launched the backend can moderate. Platform permissions are checked by
- * the service and, finally, by Discord and Kick themselves.
+ * the service and, finally, by Discord, Kick and Twitch themselves.
  */
 export function createModerationRouter(services: Services): Router {
   const { moderation } = services;
@@ -15,9 +15,13 @@ export function createModerationRouter(services: Services): Router {
     res.json(await moderation.state());
   });
 
-  // The two moderation pages: Kick (recent chat, automated protection, logs) and Discord (protection, logs).
+  // The moderation pages: Kick and Twitch (automated protection, logs) and Discord (protection, logs).
   router.get('/moderation/kick', (_req, res) => {
     res.json(moderation.kickState());
+  });
+
+  router.get('/moderation/twitch', (_req, res) => {
+    res.json(moderation.twitchState());
   });
 
   router.get('/moderation/discord', async (_req, res) => {
@@ -40,9 +44,29 @@ export function createModerationRouter(services: Services): Router {
 
   // Kick raid mode: start it now, or end it ({ active }).
   router.post('/moderation/raid', (req, res) => {
-    const active = (req.body as { active?: unknown } | undefined)?.active;
-    if (typeof active !== 'boolean') throw new AppError('validation_error', 'active must be true or false');
-    res.json(moderation.setRaid(active));
+    res.json(moderation.setRaid(activeFlag(req.body)));
+  });
+
+  router.post('/moderation/twitch/automod', (req, res) => {
+    res.json(moderation.saveTwitchAutomod(req.body));
+  });
+
+  // Twitch raid mode: start it now, or end it ({ active }).
+  router.post('/moderation/twitch/raid', (req, res) => {
+    res.json(moderation.setTwitchRaid(activeFlag(req.body)));
+  });
+
+  // Twitch's own chat modes and Shield Mode.
+  router.get('/moderation/twitch/chat-modes', async (_req, res) => {
+    res.json(await moderation.twitchChatModes());
+  });
+
+  router.post('/moderation/twitch/chat-modes', async (req, res) => {
+    res.json(await moderation.saveTwitchChatModes(req.body));
+  });
+
+  router.post('/moderation/twitch/shield-mode', async (req, res) => {
+    res.json(await moderation.setTwitchShieldMode(activeFlag(req.body)));
   });
 
   // Everything recorded for one person (a POST: no ids in query strings).
@@ -51,4 +75,10 @@ export function createModerationRouter(services: Services): Router {
   });
 
   return router;
+}
+
+function activeFlag(body: unknown): boolean {
+  const active = (body as { active?: unknown } | undefined)?.active;
+  if (typeof active !== 'boolean') throw new AppError('validation_error', 'active must be true or false');
+  return active;
 }

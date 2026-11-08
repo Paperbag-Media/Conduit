@@ -3,7 +3,12 @@
  * access token from the user's own Twitch app:
  * - GET /helix/users?login=…  (up to 100): whether a channel exists, its id, display name and profile picture;
  * - GET /helix/streams?user_id=…&first=100: the channels that are live now (offline channels are simply absent), with
- *   the title, category (game_name), viewers, start time and a thumbnail template ({width}x{height}).
+ *   the title, category (game_name), viewers, start time and a thumbnail template ({width}x{height});
+ * - GET /helix/channels?broadcaster_id=…: a channel's title and category, also while offline;
+ * - GET /helix/search/categories?query=…: categories by name.
+ * With the main account's user token instead:
+ * - GET /helix/channels/followers?broadcaster_id=…&user_id=…: when someone followed (moderator:read:followers);
+ * - PATCH /helix/channels?broadcaster_id=…: changes the title or category (channel:manage:broadcast).
  * Every request sends the app's Client-Id header. Twitch answers 429 when rate limited (Ratelimit-Reset: epoch seconds).
  */
 import type { FetchLike } from '../app/types';
@@ -17,7 +22,7 @@ const THUMBNAIL_SIZE = '1280x720';
 /** How often the thumbnail link changes, so Discord fetches Twitch's newer preview instead of its cached one. */
 export const THUMBNAIL_REFRESH_MS = 10 * 60_000;
 
-export type TwitchApiErrorKind = 'unauthorized' | 'rate_limited' | 'bad_request' | 'server_error' | 'network' | 'unexpected_response';
+export type TwitchApiErrorKind = 'unauthorized' | 'forbidden' | 'rate_limited' | 'bad_request' | 'server_error' | 'network' | 'unexpected_response';
 
 export class TwitchApiError extends Error {
   constructor(
@@ -92,6 +97,49 @@ export class TwitchApi {
     return (await this.users(app, 'id', ids)).map((u) => ({ userId: u.id, name: u.displayName, profilePicture: u.profilePicture }));
   }
 
+  /** A login's user id, or null when Twitch has no such user. */
+  async userId(app: TwitchAppToken, login: string): Promise<string | null> {
+    return (await this.users(app, 'login', [login]))[0]?.id ?? null;
+  }
+
+  /** A channel's title and category, also while it's offline (null when it has none). */
+  async channelDetails(app: TwitchAppToken, broadcasterId: string): Promise<{ title: string | null; category: string | null } | null> {
+    const [raw] = await this.get(app, `/channels?${new URLSearchParams({ broadcaster_id: broadcasterId }).toString()}`);
+    if (!raw) return null;
+    const c = raw as { title?: unknown; game_name?: unknown };
+    return {
+      title: typeof c.title === 'string' && c.title.trim() ? c.title.trim().slice(0, 300) : null,
+      category: typeof c.game_name === 'string' && c.game_name.trim() ? c.game_name.trim().slice(0, 200) : null,
+    };
+  }
+
+  /** The category called `name`, else Twitch's closest match. */
+  async findCategory(app: TwitchAppToken, name: string): Promise<{ id: string; name: string } | null> {
+    const data = await this.get(app, `/search/categories?${new URLSearchParams({ query: name, first: '20' }).toString()}`);
+    const found = data.flatMap((raw) => {
+      const c = raw as { id?: unknown; name?: unknown };
+      return typeof c.id === 'string' && typeof c.name === 'string' ? [{ id: c.id, name: c.name }] : [];
+    });
+    return found.find((c) => c.name.toLowerCase() === name.toLowerCase()) ?? found[0] ?? null;
+  }
+
+  /** When `userId` followed the channel (null: they don't follow it). Needs the broadcaster's token. */
+  async followedAt(user: TwitchAppToken, broadcasterId: string, userId: string): Promise<string | null> {
+    const [raw] = await this.get(user, `/channels/followers?${new URLSearchParams({ broadcaster_id: broadcasterId, user_id: userId }).toString()}`);
+    const at = (raw as { followed_at?: unknown } | undefined)?.followed_at;
+    return typeof at === 'string' ? at : null;
+  }
+
+  /** Changes the channel's title or category. Needs the broadcaster's token. */
+  async updateChannel(user: TwitchAppToken, broadcasterId: string, patch: { title?: string; game_id?: string }): Promise<void> {
+    const res = await this.request(user, `/channels?${new URLSearchParams({ broadcaster_id: broadcasterId }).toString()}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    await res.body?.cancel().catch(() => undefined);
+  }
+
   private async users(app: TwitchAppToken, by: 'login' | 'id', values: string[]): Promise<Array<{ id: string; login: string; displayName: string; profilePicture: string | null }>> {
     const query = new URLSearchParams(values.map((v): [string, string] => [by, v]));
     const data = await this.get(app, `/users?${query.toString()}`);
@@ -140,17 +188,26 @@ export class TwitchApi {
   }
 
   private async get(app: TwitchAppToken, path: string): Promise<unknown[]> {
+    const res = await this.request(app, path);
+    const body = (await res.json().catch(() => null)) as { data?: unknown } | null;
+    if (!body || !Array.isArray(body.data)) throw new TwitchApiError('unexpected_response', 'Twitch sent an unexpected answer');
+    return body.data;
+  }
+
+  private async request(app: TwitchAppToken, path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<Response> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${TWITCH_API_BASE}${path}`, {
-        headers: { Authorization: `Bearer ${app.token}`, 'Client-Id': app.clientId, Accept: 'application/json' },
+        ...init,
+        headers: { Authorization: `Bearer ${app.token}`, 'Client-Id': app.clientId, Accept: 'application/json', ...init.headers },
         redirect: 'error',
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
       throw new TwitchApiError('network', 'Twitch couldn’t be reached');
     }
-    if (res.status === 401) throw new TwitchApiError('unauthorized', 'Twitch rejected the app’s access token');
+    if (res.status === 401) throw new TwitchApiError('unauthorized', 'Twitch rejected the access token');
+    if (res.status === 403) throw new TwitchApiError('forbidden', 'Twitch refused the request');
     if (res.status === 429) {
       const reset = Number(res.headers.get('ratelimit-reset'));
       const seconds = Number.isFinite(reset) && reset > 0 ? Math.max(1, Math.ceil(reset - this.now().getTime() / 1000)) : undefined;
@@ -160,8 +217,6 @@ export class TwitchApi {
     if (res.status === 400) throw new TwitchApiError('bad_request', 'Twitch refused the request');
     if (res.status >= 500) throw new TwitchApiError('server_error', `Twitch had a problem (HTTP ${res.status})`);
     if (!res.ok) throw new TwitchApiError('unexpected_response', `Twitch answered HTTP ${res.status}`);
-    const body = (await res.json().catch(() => null)) as { data?: unknown } | null;
-    if (!body || !Array.isArray(body.data)) throw new TwitchApiError('unexpected_response', 'Twitch sent an unexpected answer');
-    return body.data;
+    return res;
   }
 }

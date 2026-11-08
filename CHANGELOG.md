@@ -9,6 +9,37 @@ first). It becomes the next version when a release is prepared.
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-11-08
+
+### Added
+- **Twitch Moderation** (sidebar → Twitch):
+  - **Automated Protection** on Twitch chat: the same checks, raid mode and ignored users as Kick, with their own
+    settings.
+  - **Chat Modes:** Shield Mode, slow mode, followers-only, subscribers-only, emote-only and unique chat, changed on
+    Twitch straight away.
+  - **Logs:** what CONDUIT did, plus bans, timeouts and unbans done on Twitch itself.
+- **Commands → Twitch → Default Commands:** `!ping`, `!commands`, `!uptime`, `!followage`, `!title`, `!so`, `!timeout`,
+  `!ban`, `!unban`, `!addcom`, `!editcom`, `!delcom` and `!setcategory`, like Kick's. Each can be switched off, and your
+  own custom command with the same trigger answers instead.
+- **Giveaways → Twitch:** viewers enter with `!enter` in your Twitch chat, on its own or together with Kick and Discord.
+  The chatbot posts the giveaway's messages in Twitch chat, and a subscriber or founder badge counts for the subscriber
+  multiplier.
+
+### Changed
+- **Twitch accounts connected before this version** must be connected again for the new commands and Twitch
+  Moderation. The Twitch card shows **Reconnect**. Chat, commands and giveaways keep working without it.
+- **Explanations are back:** every page has its short description under the title, and cards, fields and protection
+  checks have their explanations again, as small gray text instead of on hover.
+- **Winners:** when a giveaway runs on both Kick and Twitch, chat announcements say which chat each winner is from, and
+  the Discord announcement labels Twitch winners **(Twitch)**.
+- **Dashboard → Twitch:** the card no longer shows an App row, matching Kick.
+
+### Fixed
+- **Kick and Twitch `!timeout`, `!ban` and `!unban`:** a moderator can't use them on another moderator (they act as
+  the channel owner). You still can.
+- **Kick Moderation → Logs:** chat commands show as "!ban by name", not as the dashboard.
+
+
 ## [1.3.0] - 2026-11-04
 
 ### Added

@@ -32,7 +32,8 @@ describe('Settings', () => {
     expect(t).toContain('About CONDUIT v0.4.0 Initial development Build Development build Platform Windows');
     expect(t).not.toContain('More settings');
     expect(html).not.toMatch(/<input|<select|<textarea/);
-    expect(t).not.toMatch(/Release channel|doesn’t check for updates online/);
+    expect(t).not.toContain('Release channel');
+    expect(t).toContain('CONDUIT doesn’t check for updates online.');
     expect(t).not.toMatch(/update available/i);
   });
 
@@ -149,7 +150,7 @@ describe('Settings → Backup & Restore, Logs', () => {
     expect(t).toContain('Check Dashboard → Discord → Manage.');
     expect(html).toContain('&quot;code&quot;: 4004');
     expect(t).toContain('desktop.log doesn’t exist yet.');
-    expect(t).toContain('Most recent entries only.');
+    expect(t).toContain('Showing the most recent matching entries. Older ones are in the log files.');
     expect(text(renderToStaticMarkup(<LogList view={{ entries: [], modules: [], truncated: false, problems: [], folder: '' }} />))).toContain('No log entries match these filters.');
   });
 });

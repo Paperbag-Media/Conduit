@@ -30,6 +30,13 @@ export const AUTOMOD_TRIGGER_LABEL: Record<AutomodTrigger, string> = {
   member_profile: 'Member names',
 };
 
+/** What each AutoMod rule type checks: under New rule and in the rule editor. */
+export const AUTOMOD_TRIGGER_HELP: Record<AutomodTrigger, string> = {
+  keyword: 'Messages with words, phrases or patterns from your list (* wildcards, regular expressions).',
+  mention_spam: 'Messages that @mention too many members and roles at once (raids often do).',
+  member_profile: 'Usernames and nicknames with words from your list, checked when members join or change nickname.',
+};
+
 /** At most this many rules per server. */
 export const AUTOMOD_RULES_MAX = 25;
 

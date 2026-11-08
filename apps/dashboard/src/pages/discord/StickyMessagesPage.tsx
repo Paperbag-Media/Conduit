@@ -36,6 +36,7 @@ export function StickyMessagesView({ s, onChanged }: { s: StickyMessagesState; o
         </PageActions>
       )}
       <section className="card" aria-label="Sticky messages">
+        <p className="muted small">When people post, each one moves back to the bottom: the bot posts a fresh copy and deletes the old one.</p>
         {s.stickies.length === 0 && !editing ? (
           <p className="empty-note">No sticky messages yet.</p>
         ) : (
@@ -190,6 +191,7 @@ function StickyEditor({ initial, onClose, onSaved }: { initial: StickyMessageVie
           <input aria-label="Cooldown seconds" className="num" type="number" min={5} max={3600} value={cooldown} onChange={(e) => setCooldown(Number(e.target.value))} />
           <span>seconds</span>
         </div>
+        <p className="muted small">Several messages in a row cause one repost. Nothing is reposted while the sticky is still the newest message.</p>
         {(errors.cooldownSeconds || errors.messagesBeforeRepost) && <span className="field-error">{errors.cooldownSeconds ?? errors.messagesBeforeRepost}</span>}
       </fieldset>
       <div className="card-foot">

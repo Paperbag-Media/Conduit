@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { GIVEAWAY_ENTER, type CommandPlatform, type CommandsHubState, type DiscordCommandsOverview } from '@conduit/shared';
+import { GIVEAWAY_ENTER, type CommandPlatform, type CommandsHubState, type DefaultCommandView, type DiscordCommandsOverview } from '@conduit/shared';
 import { commandInputs } from '../discord/commands';
 import { AppError } from '../errors';
 import type { Services } from '../services';
@@ -14,6 +14,21 @@ function uuidParam(value: string | undefined): string {
 function snowflakeParam(value: string | undefined): string {
   if (!value || !/^\d{17,20}$/.test(value)) throw new AppError('bad_request', 'Invalid Discord id');
   return value;
+}
+
+/** The giveaway entry command, always on. */
+function enterCommand(platform: 'kick' | 'twitch'): DefaultCommandView {
+  return {
+    trigger: GIVEAWAY_ENTER[platform],
+    description: 'Enters the current giveaway (silent: no reply in chat)',
+    permission: 'everyone',
+    enabled: true,
+    canDisable: false,
+    inactiveReason: null,
+    args: [],
+    example: GIVEAWAY_ENTER[platform],
+    message: null,
+  };
 }
 
 /** Everything the Commands page shows for one platform, from the authoritative services. */
@@ -57,11 +72,12 @@ async function commandsHub(services: Services, platform: CommandPlatform): Promi
     else if (!t.send.ready) twitchNote = t.send.problem ?? 'The chatbot account can’t send chat messages yet.';
     return {
       platform,
-      defaults: [],
+      defaults: [enterCommand('twitch'), ...services.twitchDefaults.views()],
       custom,
       ready: { ok: live && t.send.ready, note: twitchNote, sendAs: t.send.accountName, channel: t.send.channel },
       registration: null,
-      recent,
+      // Custom and default commands, newest first.
+      recent: [...recent, ...services.twitchDefaults.recent()].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 20),
     };
   }
   const chat = services.kickChat.state();
@@ -71,20 +87,7 @@ async function commandsHub(services: Services, platform: CommandPlatform): Promi
   else if (!chat.send.ready) note = chat.send.problem ?? 'The chatbot account can’t send chat messages yet.';
   return {
     platform,
-    defaults: [
-      {
-        trigger: GIVEAWAY_ENTER.kick,
-        description: 'Enters the current giveaway (silent: no reply in chat)',
-        permission: 'everyone',
-        enabled: true,
-        canDisable: false,
-        inactiveReason: null,
-        args: [],
-        example: GIVEAWAY_ENTER.kick,
-        message: null,
-      },
-      ...services.kickDefaults.views(),
-    ],
+    defaults: [enterCommand('kick'), ...services.kickDefaults.views()],
     custom,
     ready: { ok: receiving && chat.send.ready, note, sendAs: chat.send.accountName, channel: chat.send.channel },
     registration: null,
@@ -201,6 +204,11 @@ export function createConnectionRouter(services: Services): Router {
   router.post('/kick/default-commands', async (req, res) => {
     services.kickDefaults.save(req.body);
     res.json(await commandsHub(services, 'kick'));
+  });
+
+  router.post('/twitch/default-commands', async (req, res) => {
+    services.twitchDefaults.save(req.body);
+    res.json(await commandsHub(services, 'twitch'));
   });
 
   // ── Commands → Discord: categories, Command Permissions, bot presence ───────

@@ -7,22 +7,9 @@
  * title (!title with text) and !setcategory need "channel:write" (granted when the main account is connected or
  * reauthorized).
  */
-import { z } from 'zod';
-import type { CommandPermission } from '../community/custom-commands';
+import type { ChatDefaultCommandDefinition } from '../community/custom-commands';
 
-export interface KickDefaultCommandDefinition {
-  trigger: string;
-  description: string;
-  permission: CommandPermission;
-  /** What goes after the trigger, in order; optional ones in [brackets]. */
-  args: readonly string[];
-  /** A filled-in example, as someone would type it in chat. */
-  example: string;
-  /** What the chatbot answers, with {variables} where the details go. */
-  message: string;
-}
-
-export const KICK_DEFAULT_COMMANDS: readonly KickDefaultCommandDefinition[] = [
+export const KICK_DEFAULT_COMMANDS: readonly ChatDefaultCommandDefinition[] = [
   { trigger: '!ping', message: 'Pong! I’m connected and ready!', description: 'Checks that the chatbot is connected and answering', permission: 'moderator', args: [], example: '!ping' },
   { trigger: '!commands', message: 'Commands: {commands}', description: 'Lists the commands everyone can use', permission: 'everyone', args: [], example: '!commands' },
   { trigger: '!uptime', message: '{streamer} has been live for {uptime}.', description: 'How long you’ve been live', permission: 'everyone', args: [], example: '!uptime' },
@@ -37,11 +24,3 @@ export const KICK_DEFAULT_COMMANDS: readonly KickDefaultCommandDefinition[] = [
   { trigger: '!delcom', message: 'Deleted {command}.', description: 'Deletes a custom command', permission: 'moderator', args: ['!name'], example: '!delcom !discord' },
   { trigger: '!setcategory', message: 'Category changed to {category}.', description: 'Changes your stream category', permission: 'moderator', args: ['category'], example: '!setcategory Just Chatting' },
 ];
-
-const trigger = z.string().regex(/^![a-z0-9_]{1,31}$/);
-
-/** Saved settings: the default commands switched off. Nothing saved = all on. */
-export const kickDefaultCommandSettingsSchema = z.strictObject({
-  disabled: z.array(trigger).max(50).default([]),
-});
-export type KickDefaultCommandSettings = z.output<typeof kickDefaultCommandSettingsSchema>;

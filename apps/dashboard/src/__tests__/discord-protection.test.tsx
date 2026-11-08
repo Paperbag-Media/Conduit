@@ -80,7 +80,9 @@ describe('Discord Bot → Protection overview', () => {
     const { html, t } = await render(state());
     expect(sections(html)).toEqual(['Protection']);
     expect(t).not.toMatch(/Runs on Discord|Runs in CONDUIT/);
-    expect(t).toMatch(/Protection AutoMod No rules Manage Message checks Off Configure Anti-nuke Off Configure Anti-raid Off Configure Bot bait Off Configure/);
+    expect(t).toMatch(
+      /Protection Everything runs while CONDUIT is open\. All activity is in the Logs tab\. AutoMod Your own rules for words, mention spam and member names\. No rules Manage Message checks Repeated messages, flooding, caps and invite links\. Off Configure Anti-nuke Stops mass deleting, banning and rogue bots\. Off Configure Anti-raid Spots join bursts, can lock the server down, and checks new accounts \(join gate\)\. Off Configure Bot bait Trap channels: anyone who posts there is treated as a spam bot\. Off Configure/,
+    );
     expect(t).not.toMatch(/Join gate &amp; Verify|Verify button/);
     for (const f of ['Message checks', 'Anti-nuke', 'Anti-raid', 'Bot bait']) expect(html).toContain(`aria-label="${f} off"`);
     expect(html).not.toContain('protection-panel');
@@ -115,7 +117,7 @@ describe('Discord Bot → Protection overview', () => {
     expect(html.match(/protection-panel/g)).toHaveLength(1);
     expect(html).toContain('aria-expanded="true"');
     expect(t).toMatch(/Anti-nuke .* Close/);
-    expect(t).not.toContain('Never acts on the server owner');
+    expect(t).toContain('Never acts on the server owner');
     expect(t).not.toContain('Repeated messages Message flooding');
   });
 

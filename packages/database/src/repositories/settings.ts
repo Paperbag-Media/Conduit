@@ -17,14 +17,20 @@ export const SETTING_KEYS = {
   giveawayKickMessages: 'giveaways.kick_messages',
   /** Automated chat protection settings (JSON, see automodSettingsSchema); unset: off, log-only defaults. */
   automodSettings: 'moderation.automod',
+  /** The same for Twitch chat; unset: off, log-only defaults. */
+  twitchAutomodSettings: 'moderation.automod.twitch',
+  /** Kick user ids last seen in chat with a moderator badge (JSON array): Kick has no API that lists a channel's moderators. */
+  kickModerators: 'moderation.kick.moderators',
   /** Loyalty & Rewards settings (JSON, see loyaltySettingsSchema); unset: off, with defaults. */
   loyaltySettings: 'loyalty.settings',
   /** Settings → Appearance & Themes (JSON, see appearanceSchema); unset: CONDUIT Default. */
   appearance: 'appearance',
   /** Commands → Discord → Command Permissions (JSON, see commandAccessSchema); unset: every command at its default group. */
   discordCommandAccess: 'discord.command_access',
-  /** Commands → Kick → Default Commands (JSON, see kickDefaultCommandSettingsSchema); unset: all on. */
+  /** Commands → Kick → Default Commands (JSON, see defaultCommandSettingsSchema); unset: all on. */
   kickDefaultCommands: 'kick.default_commands',
+  /** Commands → Twitch → Default Commands (the same shape). */
+  twitchDefaultCommands: 'twitch.default_commands',
   /** The Discord bot's presence (JSON, see presenceSchema); unset: Discord's default (online, no activity). */
   discordPresence: 'discord.presence',
   /** CONDUIT's Discord message checks (JSON, see messageChecksSchema); unset: off, log-only defaults. */

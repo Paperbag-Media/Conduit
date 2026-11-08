@@ -290,14 +290,21 @@ This is all **Twitch Notifications** needs.
 
 ### 2. Your Account
 
-Select **Connect Twitch account**. Twitch's page opens in your browser and asks only for chat: `user:read:chat` (to
-read your channel's chat) and, when your main account is the chatbot, `user:write:chat` (to post in it). After you
-approve it, the card shows your name and avatar. Twitch requires apps to check their authorization every hour, so
+Select **Connect Twitch account**. Twitch's page opens in your browser and asks for `user:read:chat` (to read your
+channel's chat), `user:write:chat` when your main account is the chatbot (to post in it), `moderator:read:followers`
+(for `!followage`), `channel:manage:broadcast` (to change your title and category from chat) and the permissions
+[Twitch Moderation](#twitch-moderation) needs. After you approve it, the card shows your name and avatar. Twitch requires apps to check their authorization every hour, so
 CONDUIT does that while it runs. If you remove CONDUIT under Twitch → Settings → Connections, the card shows **Needs
 Reconnect**. **Disconnect** revokes CONDUIT's access at Twitch.
 
 **Connected with 1.1.0?** That version asked for no permissions, so the card shows **Allow Chat**. Select it and
 approve on Twitch once more. Twitch Notifications keep working either way.
+
+**Connected before 1.4.0?** The card shows **Reconnect**. Approve on Twitch once more to allow `!followage`,
+`!setcategory` and changing the title. Everything else keeps working either way.
+
+**Connected before 1.6.0?** The card shows **Reconnect** too. Approve on Twitch once more to allow Twitch Moderation.
+Chat, commands and giveaways keep working either way.
 
 ### 3. Chatbot
 
@@ -332,8 +339,7 @@ Twitch commands are managed on the **Commands** page; see [Commands](#commands).
 
 **Commands** in the sidebar holds every command, with a tab each for **Discord**, **Kick** and **Twitch**.
 
-**Twitch** has custom commands (no default commands yet). They work like Kick's: a `!trigger`, a one-line reply of up
-to 500 characters, permissions and cooldowns. **Moderators** means Twitch's moderator badge (or lead moderator).
+**Twitch** commands work like Kick's: a `!trigger`, a one-line reply of up to 500 characters, permissions and cooldowns. **Moderators** means Twitch's moderator badge (or lead moderator).
 **Subscribers** means the subscriber or founder badge. Replies post as the Twitch chatbot account; CONDUIT never
 answers its own messages. Stream variables such as `{title}`, `{category}`, `{viewers}`, `{uptime}` and `{url}`
 use your **Twitch** stream in Twitch commands. Kick's experimental website variables and Discord-only variables aren't
@@ -350,6 +356,8 @@ straight away; **Message** is what it answers, with its {variables} marked, and 
   Discord. **Edit access** (top right) shows a menu for each command's **Access**; **Done** closes it.
 - **Kick:** `!enter` (giveaway entry, always on) and the Kick default commands below. A command switched off is ignored
   in chat; your own custom command with the same trigger answers instead of the default.
+- **Twitch:** `!enter` (giveaway entry, always on) and the Twitch default commands below, switched off and replaced the
+  same way as Kick's.
 
 **Kick default commands**
 
@@ -371,6 +379,29 @@ straight away; **Message** is what it answers, with its {variables} marked, and 
   recorded in Kick Moderation's history as "*moderator* via !timeout"; changing the title and `!setcategory` need
   *channel:write*. If you connected Kick before these existed, select **Reauthorize main account** (Dashboard → Kick →
   Manage) once; until then the chatbot says so.
+- `!timeout`, `!ban` and `!unban` act as the channel owner, so a moderator can't use them on another moderator; you can.
+  Kick has no way for apps to list your moderators, so CONDUIT knows them from the moderator badge on their chat
+  messages: someone who hasn't chatted since CONDUIT was first set up isn't known yet.
+
+**Twitch default commands**
+
+| Command | Who | Does |
+| --- | --- | --- |
+| `!ping` | Moderators and you | Checks the chatbot is connected: it answers "Pong! I'm connected and ready!" |
+| `!commands` | Everyone | Lists the commands everyone can use |
+| `!uptime` | Everyone | How long you've been live (or that you're offline) |
+| `!title`, `!title new title` | Moderators and you | Shows your stream title, or changes it |
+| `!followage [@name]` | Everyone | How long they (or the person asking) have followed you |
+| `!so @name` | Moderators | Shout-out with their link and category |
+| `!timeout @name [minutes] [reason]` | Moderators | Times someone out (10 minutes unless you say, up to 14 days) |
+| `!ban @name [reason]` | Moderators | Bans someone |
+| `!unban @name` | Moderators | Lifts a ban or a timeout |
+| `!addcom !name reply`, `!editcom !name reply`, `!delcom !name` | Moderators | Adds, changes or deletes a custom command |
+| `!setcategory name` | Moderators | Changes your stream category |
+
+- The same 10-second cooldown applies.
+- `!followage`, moderation and changing the title or category use your main Twitch account (see [Your Account](#2-your-account)).
+- `!timeout`, `!ban` and `!unban` act as the channel owner, so a moderator can't use them on another moderator; you can.
 
 The **Custom Commands** tab holds yours (Command | Access | Description | Status). Below the tabs, **Recent runs** is
 the log of what each command did.
@@ -485,7 +516,7 @@ Open **Giveaways** in the sidebar. It has two browser-style tabs:
 - **Giveaways:** **New giveaway** (top right), the **Current giveaway** (running, or entries closed and waiting for the
   draw) and **Completed** giveaways, one line each (prize, when, entries, winners), 5 to a page. Select one to open its
   winners, completion time and draw history.
-- **Messages:** the Kick chat messages described below.
+- **Messages:** the chat messages described below.
 
 ### Start a giveaway
 
@@ -495,11 +526,11 @@ error says what to fix.
 
 - **Prize**, optional **description**, **winners** (1–50) and an optional **duration** (1 minute to 7 days; empty =
   until you end entries).
-- **Entry on** Kick, Discord or both. Kick needs your main Kick account connected; Discord needs a **Discord
-  announcement channel** (the last one is preselected; channels where the bot lacks a permission are disabled and say
+- **Entry on** Kick, Twitch, Discord or any mix. Kick and Twitch need your main account there connected; Discord needs a
+  **Discord announcement channel** (the last one is preselected; channels where the bot lacks a permission are disabled and say
   which one). Start checks the bot's access to that channel.
-- **Kick bonus tickets (optional):** a **Channel Points reward** (name, cost in points, bonus tickets per redemption)
-  and an **active-subscriber multiplier** (2×–5×). See *Tickets* below.
+- **Kick bonus tickets (optional):** a **Channel Points reward** (name, cost in points, bonus tickets per redemption).
+- **Subscribers (optional, Kick and Twitch):** an **active-subscriber multiplier** (2×–5×). See *Tickets* below.
 
 Only one giveaway runs at a time. While it runs you can still change the prize, description and number of winners
 (**Edit**).
@@ -510,18 +541,19 @@ Only one giveaway runs at a time. While it runs you can still change the prize, 
   giveaway!" (repeats aren't announced; during a burst at most 10 announcements wait in line, but everyone is entered).
   After entries close, `!enter` gets a short "Giveaway entries are closed." (at most once a minute). Needs Kick chat
   connected (Kick → Manage → 4. Live chat).
+- **Twitch:** the same, with `!enter` in your Twitch chat. Needs Twitch chat connected (Twitch → Manage → Live Chat).
 - **Discord:** click **🎉 Enter Giveaway** on the giveaway's embed. Entering is one-way: there is no leave option. The
   answer is private to the person clicking ("You've entered the giveaway! 🎉", "You're already entered in this
   giveaway!", "This giveaway is closed. Entries are no longer accepted."). Nothing is posted publicly or sent by DM.
-  The embed explains the Discord button only; Kick viewers learn about `!enter` from the Kick chat announcement.
+  The embed explains the Discord button only; chat viewers learn about `!enter` from the chat announcement.
 
-Each Kick or Discord account enters once, identified by its platform user ID (never by name). The same person on Kick
-and Discord counts as two entrants (accounts aren't linked). Your own accounts and the Kick chatbot can't enter.
+Each account enters once, identified by its platform user ID (never by name). The same person on two platforms counts as
+two entrants (accounts aren't linked). Your own accounts and the chatbots can't enter.
 
-### Kick chat messages
+### Chat messages
 
-The messages the chatbot posts in Kick chat during a giveaway are editable on the Giveaways page, on the **Kick
-Messages** tab, before anything is sent: **Giveaway started**, **Viewer entered**, **Entries closed**, **Winners drawn**,
+The messages the chatbot posts in Kick and Twitch chat during a giveaway (the same text in both) are editable on the
+Giveaways page, on the **Messages** tab, before anything is sent: **Giveaway started**, **Viewer entered**, **Entries closed**, **Winners drawn**,
 **Winner redrawn** and **Entry after closing** (the reply to a late `!enter`). Edit the text and select **Save
 messages**; nothing is posted when you save. Exactly the saved text is posted later, with its `{variables}` filled in.
 Each message lists its own variables and shows an example:
@@ -558,8 +590,9 @@ Every entrant has **1 ticket**. Optional extras, Kick only:
 - **Active-subscriber multiplier.** Kick's API has no way to look up whether a viewer is subscribed right now. The
   reliable signal is the **subscriber badge** Kick puts on the signed chat event, so CONDUIT checks it on the viewer's
   `!enter` message: subscribed at that moment = verified. Status is evaluated **once, at entry**, and used for the draw
-  (the evidence — that message's ID and time — is stored). Other badges (OG, VIP, founder, gifter) don't count;
-  Discord entrants never get it.
+  (the evidence — that message's ID and time — is stored). Other badges (OG, VIP, founder, gifter) don't count.
+  On Twitch the same check uses the **subscriber** or **founder** badge on the viewer's `!enter` message. Discord
+  entrants never get it.
 - **Rule:** tickets = (1 + bonus tickets) × (verified subscriber ? multiplier : 1). Example: 2 bonus tickets and 2× →
   (1 + 2) × 2 = **6** tickets. Giveaways from before this keep 1 entry = 1 ticket.
 
@@ -596,10 +629,10 @@ includes them; winner announcements show the winner's name and the prize only.
 
 ## Moderation
 
-**Kick Moderation** (sidebar → Kick) and **Discord Bot** (sidebar → Discord: tabs **Settings**, **Protection**, **Logs**); Twitch Moderation and
-YouTube are marked *Soon* (planned, not connected, no permissions requested). Neither working page has manual buttons:
-actions happen through **automated protection** (Kick) and CONDUIT's **moderation commands in Discord**. The pages
-configure protection and show what happened.
+**Kick Moderation** (sidebar → Kick), **Twitch Moderation** (sidebar → Twitch) and **Discord Bot** (sidebar → Discord: tabs
+**Settings**, **Protection**, **Logs**); YouTube is marked *Soon* (planned, not connected, no permissions requested). None
+of these pages has buttons to act on a person: actions happen through **automated protection** (Kick, Twitch) and
+**moderation commands**. The pages configure protection and show what happened.
 
 ### Kick Moderation
 
@@ -644,6 +677,23 @@ configure protection and show what happened.
 Deleting and timing out use your main account's `moderation:chat_message:manage` and `moderation:ban`. If you
 connected Kick before moderation was added, select **Reauthorize main account** (Dashboard → Kick → Manage) once;
 until then those actions can't be chosen and say why.
+
+### Twitch Moderation
+
+- **Chat Modes** — Twitch's own modes, changed on Twitch as soon as you select them: **Shield Mode**, **Slow mode** (3 to
+  120 seconds), **Followers-only** (how long they must have followed, in minutes; 0 for any follower),
+  **Subscribers-only**, **Emote-only** and **Unique chat**. The page shows what Twitch says when you open it.
+- **Automated Protection** — the same checks, raid mode and ignored users as [Kick Moderation](#kick-moderation), with
+  their own settings, and `twitch.tv` as the first allowed site. Twitch emotes count as emotes, not as words or capitals.
+  Raid mode doesn't change the chat modes; switch on Shield Mode here if you want it too. Twitch won't delete a
+  moderator's messages, so with **Ignore moderators** off that action shows as *Failed*.
+- **Logs** — what protection and `!timeout`, `!ban` and `!unban` did, plus bans, timeouts and unbans done on **Twitch
+  itself**, as *On Twitch by …*, from Twitch's `channel.ban` and `channel.unban` events (CONDUIT's own aren't listed
+  twice). Select a **name** to see everything recorded for that person.
+
+These use your main account's `moderator:manage:banned_users`, `moderator:manage:chat_messages`, `moderation:read`,
+`moderator:manage:chat_settings`, `moderator:manage:shield_mode` and `channel:moderate`. If you connected Twitch before
+1.6.0, select **Reconnect** on the Twitch card once; until then those actions can't be chosen and say why.
 
 ### Discord Bot
 
@@ -779,7 +829,7 @@ both logs, select a name for that person's history.
 
 The sidebar starts with Dashboard, Commands, Giveaways and Timed Messages, then is organised by platform: **Discord**
 (Discord Bot, with its Settings, Protection and Logs tabs; Sticky Messages; Embed Creator; Loyalty & Rewards), **Kick**
-(Kick Moderation, Kick Notifications, Clips), **Twitch** (Twitch Notifications; Moderation *Soon*), **YouTube** (*Soon*)
+(Kick Moderation, Kick Notifications, Clips), **Twitch** (Twitch Notifications, Twitch Moderation), **YouTube** (*Soon*)
 and **OBS Overlays** (*Soon*). Each platform heading folds its group.
 Pinned to the bottom of the sidebar (always visible): **Settings** and "Made by Retronix". Settings shows About CONDUIT
 (version, release channel, build), **Backup & Restore**, **Logs** and the release notes (see [Settings](#settings)).

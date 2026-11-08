@@ -7,6 +7,11 @@ export interface Migration {
   name: string;
   /** SQL executed inside a transaction. */
   up: string;
+  /**
+   * Drops and recreates tables other tables point at. Runs with foreign keys off, so dropping a table doesn't cascade
+   * into them (SQLite's documented table rebuild), and every reference is checked before committing.
+   */
+  rebuildsTables?: boolean;
 }
 
 export interface MigrationResult {
@@ -80,10 +85,19 @@ export function migrate(db: Database, migrations: readonly Migration[]): Migrati
 
   for (const m of migrations) {
     if (appliedVersions.has(m.version)) continue;
-    withTransaction(db, () => {
-      db.exec(m.up);
-      insert.run(m.version, m.name, checksum(m.up), new Date().toISOString());
-    });
+    // This pragma has no effect inside a transaction.
+    if (m.rebuildsTables) db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      withTransaction(db, () => {
+        db.exec(m.up);
+        if (m.rebuildsTables && db.prepare('PRAGMA foreign_key_check').all().length > 0) {
+          throw new MigrationError(`Migration ${m.version} ("${m.name}") left broken references.`);
+        }
+        insert.run(m.version, m.name, checksum(m.up), new Date().toISOString());
+      });
+    } finally {
+      if (m.rebuildsTables) db.exec('PRAGMA foreign_keys = ON');
+    }
     applied.push(m.version);
   }
 

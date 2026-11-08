@@ -26,7 +26,7 @@ import { KickGiveawayMessagesCard } from '../../components/kick/KickGiveawayMess
 import { useAsync, useBackendStatus, usePolling } from '../../hooks';
 
 const POLL_MS = 3000;
-const PLATFORM_LABEL: Record<GiveawayPlatform, string> = { kick: 'Kick', discord: 'Discord' };
+const PLATFORM_LABEL: Record<GiveawayPlatform, string> = { kick: 'Kick', twitch: 'Twitch', discord: 'Discord' };
 const MULTIPLIERS = [1, 2, 3, 4, 5] as const;
 
 const STATUS_LABEL: Record<GiveawayStatus, string> = {
@@ -44,7 +44,7 @@ const STATUS_PILL: Record<GiveawayStatus, string> = {
   cancelled: 'pill-muted',
 };
 
-/** Giveaways: start giveaways and run them; viewers enter from Kick chat (!enter) and Discord (the embed's buttons). */
+/** Giveaways: start giveaways and run them; viewers enter from Kick and Twitch chat (!enter) and Discord (the embed's buttons). */
 export function GiveawaysPage() {
   const backend = useBackendStatus();
   const running = backend?.state === 'running';
@@ -56,7 +56,7 @@ export function GiveawaysPage() {
 
 /**
  * Giveaways, on two browser-style tabs: **Giveaways** (the one running, then the completed ones as a compact list that
- * opens for details) and **Messages** (what the Kick chatbot posts).
+ * opens for details) and **Messages** (what the chatbot posts).
  */
 export function GiveawaysView({ s, onChanged, initialTab = 'giveaways' }: { s: GiveawaysState; onChanged?: () => void; initialTab?: 'giveaways' | 'messages' }) {
   const [tab, setTab] = useState(initialTab);
@@ -219,7 +219,7 @@ export function GiveawayCard({ g, onChanged, inset = false }: { g: GiveawayView;
             {g.subscriberMultiplier > 1 && (
               <span className="muted">
                 {' '}
-                · {g.subscriberMultiplier}× for verified Kick subscribers ({g.verifiedSubscribers})
+                · {g.subscriberMultiplier}× for verified subscribers ({g.verifiedSubscribers})
               </span>
             )}
           </li>
@@ -239,7 +239,7 @@ export function GiveawayCard({ g, onChanged, inset = false }: { g: GiveawayView;
           {g.platforms.includes('discord') && <DiscordAnnouncementLine g={g} busy={busy} onRetry={() => void run(() => api('POST', `${base}/discord/retry`))} />}
           {g.announcement && (
             <li className="small">
-              <strong>Kick announcement ({g.announcement.kind}):</strong>{' '}
+              <strong>Chat announcement ({g.announcement.kind}):</strong>{' '}
               <span className={g.announcement.outcome === 'sent' ? 'text-ok' : g.announcement.outcome === 'skipped' ? 'muted' : 'text-warn'}>
                 {ANNOUNCEMENT_LABEL[g.announcement.outcome]}
               </span>
@@ -471,7 +471,7 @@ function toBody(f: FormState) {
     platforms: f.platforms,
     discordChannel: f.platforms.includes('discord') ? channelRef(f.discordChannel ?? '') : null,
     kickReward: kick && f.rewardEnabled ? { title: f.rewardTitle ?? '', cost: num(f.rewardCost), tickets: num(f.rewardTickets) } : null,
-    subscriberMultiplier: kick ? Number(f.subscriberMultiplier ?? '1') : 1,
+    subscriberMultiplier: kick || f.platforms.includes('twitch') ? Number(f.subscriberMultiplier ?? '1') : 1,
   };
 }
 
@@ -597,6 +597,7 @@ export function GiveawayEditor({
             value={durationMinutes}
             onChange={setDurationMinutes}
             placeholder="Until you end it"
+            hint="Entries close automatically after this. Leave empty to end entries yourself."
             error={err('durationMinutes')}
           />
         )}
@@ -652,17 +653,28 @@ export function GiveawayEditor({
                   />
                 </div>
               )}
-              <div className="field">
-                <label htmlFor="giveaway-multiplier">Kick subscribers</label>
-                <select id="giveaway-multiplier" value={subscriberMultiplier} onChange={(e) => setSubscriberMultiplier(e.target.value)}>
-                  {MULTIPLIERS.map((m) => (
-                    <option key={m} value={String(m)}>
-                      {m === 1 ? 'No multiplier' : `${m}× tickets`}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {rewardEnabled && (
+                <span className="field-hint">
+                  CONDUIT creates this reward on your Kick channel when the giveaway starts and removes it afterwards. Viewers type !enter first, then
+                  redeem; each accepted redemption adds the bonus tickets. Redemptions without an entry, or after entries close, are rejected.
+                </span>
+              )}
             </fieldset>
+          )}
+          {(kick || platforms.includes('twitch')) && (
+            <div className="field">
+              <label htmlFor="giveaway-multiplier">Subscribers</label>
+              <select id="giveaway-multiplier" value={subscriberMultiplier} onChange={(e) => setSubscriberMultiplier(e.target.value)}>
+                {MULTIPLIERS.map((m) => (
+                  <option key={m} value={String(m)}>
+                    {m === 1 ? 'No multiplier' : `${m}× tickets`}
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">
+                Verified when they type !enter, from the subscriber or founder badge on that message. Total tickets = (1 + bonus tickets) × multiplier.
+              </span>
+            </div>
           )}
         </>
       )}
@@ -711,7 +723,12 @@ function DiscordChannelPicker({ value, onChange, error }: { value: string; onCha
         <span className="field-error">
           The bot is missing {selected.missing.join(', ')} in #{selected.name}. Fix the channel’s permissions in Discord, or choose another channel.
         </span>
-      ) : null}
+      ) : (
+        <span className="field-hint">
+          When you start, the bot posts the giveaway embed here with an Enter Giveaway button. Channels where the bot lacks permissions are
+          disabled.
+        </span>
+      )}
       {(loadError || data?.problem || data?.guilds.some((g) => g.problem)) && (
         <span className="field-hint text-warn">
           {loadError ? errorMessage(loadError) : (data?.problem ?? data?.guilds.find((g) => g.problem)?.problem)}{' '}

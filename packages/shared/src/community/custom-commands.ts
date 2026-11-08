@@ -42,7 +42,7 @@ export const PLATFORM_RULES = {
 export const RESERVED_TRIGGERS: Record<CommandPlatform, readonly string[]> = {
   discord: ['/ping', '/timeout', '/untimeout', '/ban', '/unban'],
   kick: [GIVEAWAY_ENTER.kick],
-  twitch: [],
+  twitch: [GIVEAWAY_ENTER.twitch],
 };
 
 /**
@@ -317,6 +317,25 @@ export interface CustomCommandView {
   runs: number;
 }
 
+/** A built-in chat command (kick/kick-commands.ts, twitch/twitch-commands.ts). */
+export interface ChatDefaultCommandDefinition {
+  trigger: string;
+  description: string;
+  permission: CommandPermission;
+  /** What goes after the trigger, in order; optional ones in [brackets]. */
+  args: readonly string[];
+  /** A filled-in example, as someone would type it in chat. */
+  example: string;
+  /** What the chatbot answers, with {variables} where the details go. */
+  message: string;
+}
+
+/** Saved settings of a platform's default commands: the ones switched off. Nothing saved = all on. */
+export const defaultCommandSettingsSchema = z.strictObject({
+  disabled: z.array(z.string().regex(/^![a-z0-9_]{1,31}$/)).max(50).default([]),
+});
+export type DefaultCommandSettings = z.output<typeof defaultCommandSettingsSchema>;
+
 export interface DefaultCommandView {
   trigger: string;
   description: string;
@@ -324,7 +343,7 @@ export interface DefaultCommandView {
   permission: CommandPermission;
   /** Switched on. */
   enabled: boolean;
-  /** Whether it can be switched off (Commands → Kick → Default Commands → Edit). */
+  /** Whether it can be switched off (Commands → Kick or Twitch → Default Commands). */
   canDisable: boolean;
   /** Why it doesn't answer although it's on (e.g. a custom command uses its trigger), else null. */
   inactiveReason: string | null;

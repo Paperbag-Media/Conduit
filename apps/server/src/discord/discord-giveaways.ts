@@ -320,7 +320,7 @@ function winnerLines(winners: readonly GiveawayWinnerRecord[]): string {
   const out: string[] = [];
   let used = 0;
   for (const [i, w] of winners.entries()) {
-    const line = `${w.position}. ${w.platform === 'discord' ? `<@${w.platformUserId}>` : `${clip(w.displayName, 60)} (Kick)`}`;
+    const line = `${w.position}. ${w.platform === 'discord' ? `<@${w.platformUserId}>` : `${clip(w.displayName, 60)} (${w.platform === 'kick' ? 'Kick' : 'Twitch'})`}`;
     if (used + line.length + 1 > 980) {
       out.push(`… and ${winners.length - i} more`);
       break;

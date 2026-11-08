@@ -78,7 +78,7 @@ describe('Loyalty & Rewards page', () => {
     );
     expect(t).toContain('XP per message, at most every');
     expect(t).toContain('How levels work');
-    expect(t).not.toMatch(/5 × L²|Each level is announced once|Bots, webhooks and system messages/);
+    for (const note of ['5 × L²', 'Each level is announced once', 'Bots, webhooks and system messages']) expect(t).toContain(note);
     expect(t).toContain('Include an embed');
     expect(t).toContain('Level 5');
     expect(t).toContain('@Regular');

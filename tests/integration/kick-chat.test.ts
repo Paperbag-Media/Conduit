@@ -237,8 +237,8 @@ describe('receiving: the signed webhook receiver', () => {
     const c = await until(chat, (x) => x.receive.messagesReceived === 30);
     expect(c.recent).toHaveLength(25);
     expect(c.recent.at(-1)!.content).toBe('m29');
-    // No table stores chat messages (chat_commands holds command definitions; kick_chatters only who chatted).
-    expect(h.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%chat%' ORDER BY name").all()).toEqual([{ name: 'chat_commands' }, { name: 'kick_chatters' }]);
+    // No table stores chat messages (chat_commands holds command definitions; the chatters tables only who chatted).
+    expect(h.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%chat%' ORDER BY name").all()).toEqual([{ name: 'chat_commands' }, { name: 'kick_chatters' }, { name: 'twitch_chatters' }]);
     expect(JSON.stringify(h.db.prepare('SELECT * FROM chat_commands').all())).not.toContain('m29');
     expect(JSON.stringify(h.db.prepare('SELECT * FROM kick_chatters').all())).not.toContain('m29');
   });

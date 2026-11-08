@@ -262,11 +262,23 @@ nav {
   display: none;
 }
 
+.topbar-title {
+  min-width: 0;
+  margin-right: auto;
+}
+
 .topbar h1 {
-  margin: 0 auto 0 0;
+  margin: 0;
   font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.5px;
+}
+
+.topbar-summary {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 720px;
 }
 
 .card {

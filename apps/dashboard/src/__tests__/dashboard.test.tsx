@@ -48,7 +48,7 @@ describe('app start', () => {
     const html = await renderApp(stubBridge);
     expect(html).toContain('aria-label="Connect Accounts"');
     expect(html).toContain('<h1>Dashboard</h1>');
-    expect(html).not.toContain('Connect and manage your platform accounts.');
+    expect(html).toContain('Connect and manage your platform accounts.');
     // The cards stand on their own: no section heading or intro above them.
     expect(html).not.toContain('<h2 id="connect-accounts-title">');
     expect(html).not.toContain('official authorization page in your browser');

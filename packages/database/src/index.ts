@@ -53,7 +53,7 @@ export { discordPostedMessagesRepo, type DiscordPostedMessageRecord } from './re
 export { discordLogEntriesRepo, type DiscordLogEntryRecord } from './repositories/discord-log-entries';
 export { discordMessageTextsRepo, type DiscordMessageTextRecord } from './repositories/discord-message-texts';
 export { kickClipsRepo, type KickClipRecord, type KickClipSeen } from './repositories/kick-clips';
-export { kickChattersRepo } from './repositories/kick-chatters';
+export { kickChattersRepo, twitchChattersRepo, type ChattersRepo } from './repositories/kick-chatters';
 export { discordModerationEventsRepo, type DiscordModerationEventAction, type DiscordModerationEventRecord } from './repositories/discord-moderation-events';
 export { discordCommandsRepo, type CommandRegistrationRecord } from './repositories/discord-commands';
 export {

@@ -76,6 +76,8 @@ export function TwitchCard({ state: s, busy, actionError, actionNotice, onOpen, 
   const pending = p.pending ? 'primary' : b.pending ? 'bot' : null;
   // Connected before chat existed (1.1.0): the account must be connected again to allow chat.
   const needsChatPermission = p.status === 'connected' && s.chat.receive.status === 'permission_required';
+  // Connected before a newer feature asked for more: the account must be connected again to allow it.
+  const needsPermissions = p.status === 'connected' && !needsChatPermission && s.scopes.primary.some((x) => !p.scopes.includes(x));
   const tag = twitchConnectionTag(s);
   return (
     <article className="connection-card" data-platform="twitch" aria-label="Twitch" aria-busy={busy || pending !== null || undefined}>
@@ -108,10 +110,6 @@ export function TwitchCard({ state: s, busy, actionError, actionNotice, onOpen, 
             )}
           </dd>
         </div>
-        <div className="row">
-          <dt>App</dt>
-          <dd>{s.application.configured ? <span>Set up</span> : <span className="muted">Not set up</span>}</dd>
-        </div>
       </dl>
 
       {pending && (
@@ -127,6 +125,11 @@ export function TwitchCard({ state: s, busy, actionError, actionNotice, onOpen, 
       {!pending && !p.problem && needsChatPermission && (
         <p className="connection-note note-warn" role="status">
           Connect your Twitch account again to allow chat (commands and timed messages in your Twitch chat).
+        </p>
+      )}
+      {!pending && !p.problem && needsPermissions && (
+        <p className="connection-note note-warn" role="status">
+          Reconnect your Twitch account to allow every command and Twitch Moderation.
         </p>
       )}
       {actionError && (
@@ -151,7 +154,7 @@ export function TwitchCard({ state: s, busy, actionError, actionNotice, onOpen, 
           </Button>
         ) : (
           <>
-            {(p.status === 'needs_reauth' || needsChatPermission) && (
+            {(p.status === 'needs_reauth' || needsChatPermission || needsPermissions) && (
               <Button busy={busy} onClick={() => onConnect?.('primary')}>
                 {needsChatPermission ? 'Allow Chat' : 'Reconnect'}
               </Button>

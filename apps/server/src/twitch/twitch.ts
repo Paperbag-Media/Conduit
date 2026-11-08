@@ -16,6 +16,16 @@
  * access token (see twitch-api.ts).
  */
 import type { ConnectionRole } from '@conduit/database';
+import {
+  TWITCH_BAN_SCOPE,
+  TWITCH_BROADCAST_SCOPE,
+  TWITCH_CHAT_MODES_SCOPE,
+  TWITCH_DELETE_SCOPE,
+  TWITCH_FOLLOWERS_SCOPE,
+  TWITCH_MODERATE_EVENTS_SCOPE,
+  TWITCH_MODERATORS_SCOPE,
+  TWITCH_SHIELD_SCOPE,
+} from '@conduit/shared';
 import type { FetchLike, OAuthAdapter, PlatformIdentity, TokenSet } from '../app/types';
 import { OAuthError } from '../app/types';
 
@@ -35,11 +45,25 @@ export const TWITCH_VALIDATE_INTERVAL_MS = 60 * 60_000;
  * - main account: user:read:chat, to receive its own channel's chat (EventSub channel.chat.message over CONDUIT's
  *   WebSocket session, which needs the reading account's user token);
  * - user:write:chat ("Send chat messages") for whichever account the chatbot uses: the bot account, or the main account
- *   when the user chose "Use my main account".
+ *   when the user chose "Use my main account";
+ * - main account: moderator:read:followers for !followage, and channel:manage:broadcast for changing the title and
+ *   category from chat;
+ * - main account: what Twitch Moderation does as the channel owner (see twitch-commands.ts in the shared package).
  */
 export function twitchScopes(role: ConnectionRole, chatbotMode: 'primary' | 'separate'): string[] {
   if (role === 'bot') return ['user:write:chat'];
-  return ['user:read:chat', ...(chatbotMode === 'primary' ? ['user:write:chat'] : [])];
+  return [
+    'user:read:chat',
+    ...(chatbotMode === 'primary' ? ['user:write:chat'] : []),
+    TWITCH_FOLLOWERS_SCOPE,
+    TWITCH_BROADCAST_SCOPE,
+    TWITCH_BAN_SCOPE,
+    TWITCH_DELETE_SCOPE,
+    TWITCH_MODERATORS_SCOPE,
+    TWITCH_CHAT_MODES_SCOPE,
+    TWITCH_SHIELD_SCOPE,
+    TWITCH_MODERATE_EVENTS_SCOPE,
+  ];
 }
 
 export interface TwitchClientCredentials {

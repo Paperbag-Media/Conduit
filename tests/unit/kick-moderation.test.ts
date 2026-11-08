@@ -3,7 +3,7 @@
  * migration 29 (moderation_actions rebuilt with the new rules and "done on Kick" source; known chatters).
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { AUTOMOD_DEFAULTS, automodSettingsSchema, disallowedLinks, kickTextCheck, linkHosts, type AutomodSettings } from '@conduit/shared';
+import { AUTOMOD_DEFAULTS, automodSettingsSchema, disallowedLinks, chatTextCheck, linkHosts, type AutomodSettings } from '@conduit/shared';
 import { kickChattersRepo, migrate, migrations, moderationRepo, openDatabase, type Database } from '@conduit/database';
 
 const on = (patch: Partial<AutomodSettings>): AutomodSettings => ({ ...structuredClone(AUTOMOD_DEFAULTS), enabled: true, ...patch });
@@ -33,14 +33,14 @@ describe('text checks', () => {
       symbols: { enabled: true, percent: 50, action: 'log', timeoutMinutes: 1 },
       longMessage: { enabled: true, maxLength: 30, action: 'log', timeoutMinutes: 1 },
     });
-    expect(kickTextCheck('THIS IS SO LOUD RIGHT NOW', all)).toEqual({ rule: 'caps', detail: '100% capital letters.' });
-    expect(kickTextCheck('[emote:1:KEKW] [emote:2:LUL] 😂', all)?.rule).toBe('emotes');
-    expect(kickTextCheck('$$$$$$######!!!!', all)?.rule).toBe('symbols');
-    expect(kickTextCheck('z̷̡̛̛̖̗̘̙̜̝̞̟a', all)).toEqual({ rule: 'symbols', detail: 'Stacked accent marks (Zalgo text).' });
+    expect(chatTextCheck('THIS IS SO LOUD RIGHT NOW', all)).toEqual({ rule: 'caps', detail: '100% capital letters.' });
+    expect(chatTextCheck('[emote:1:KEKW] [emote:2:LUL] 😂', all)?.rule).toBe('emotes');
+    expect(chatTextCheck('$$$$$$######!!!!', all)?.rule).toBe('symbols');
+    expect(chatTextCheck('z̷̡̛̛̖̗̘̙̜̝̞̟a', all)).toEqual({ rule: 'symbols', detail: 'Stacked accent marks (Zalgo text).' });
     // Emotes count as one character each.
-    expect(kickTextCheck('[emote:37226:KEKWLAUGHINGHARD] nice one mate', all)).toBeNull();
-    expect(kickTextCheck('a calm message that goes on and on for a while', all)?.rule).toBe('long_message');
-    expect(kickTextCheck('THIS IS SO LOUD RIGHT NOW', on({}))).toBeNull();
+    expect(chatTextCheck('[emote:37226:KEKWLAUGHINGHARD] nice one mate', all)).toBeNull();
+    expect(chatTextCheck('a calm message that goes on and on for a while', all)?.rule).toBe('long_message');
+    expect(chatTextCheck('THIS IS SO LOUD RIGHT NOW', on({}))).toBeNull();
   });
 });
 
@@ -69,7 +69,7 @@ describe('migration 29', () => {
        VALUES ('00000000-0000-0000-0000-000000000001', '2026-10-01T00:00:00.000Z', 'kick', '1', 'retrolive', 'timeout', '42', 'troll', NULL, 60, 'spam', 'automod', 'RetroLive', 'spam', 'success', NULL)`,
     ).run();
     expect(() => db.prepare("UPDATE moderation_actions SET rule = 'links'").run()).toThrow(/CHECK/);
-    expect(migrate(db, migrations)).toEqual({ applied: [29, 30], currentVersion: 30 });
+    expect(migrate(db, migrations)).toEqual({ applied: [29, 30, 31, 32], currentVersion: 32 });
     expect(moderationRepo.list(db, 10)).toEqual([expect.objectContaining({ id: '00000000-0000-0000-0000-000000000001', rule: 'spam', source: 'automod', durationSeconds: 60, targetName: 'troll' })]);
     moderationRepo.insert(db, {
       id: '00000000-0000-0000-0000-000000000002',

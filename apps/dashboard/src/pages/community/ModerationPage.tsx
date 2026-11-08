@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { createContext, useContext, useState } from 'react';
 import {
   AUTOMOD_ACTION_LABEL,
   AUTOMOD_ACTIONS,
@@ -8,7 +8,11 @@ import {
   type AutomodAction,
   type AutomodSettings,
   type AutomodState,
+  type ChatProtectionState,
   type RaidState,
+  type TwitchChatModes,
+  type TwitchChatModesState,
+  type TwitchModerationState,
   type ModerationUserHistory,
   type DiscordModerationState,
   type DiscordServerModerationView,
@@ -40,15 +44,15 @@ import { DiscordLoggingSection } from '../discord/DiscordLoggingPage';
 import { DiscordProtectionSections } from '../discord/DiscordProtection';
 
 /**
- * Moderation pages. There are no manual action controls: actions happen through automated protection (Kick) and
- * CONDUIT's Discord moderation commands. Each page shows one platform's configuration and its own logs; both read the
- * same moderation service and the same history table, filtered by platform on the backend.
+ * Moderation pages. There are no manual action controls: actions happen through automated protection (Kick, Twitch) and
+ * moderation commands. Each page shows one platform's configuration and its own logs; they read the same moderation
+ * service and the same history table, filtered by platform on the backend.
  */
 
 const POLL_MS = 5000;
 
 /** Polls one platform's moderation state from the backend. */
-function useModeration<T>(path: '/api/moderation/kick' | '/api/moderation/discord') {
+function useModeration<T>(path: '/api/moderation/kick' | '/api/moderation/twitch' | '/api/moderation/discord') {
   const backend = useBackendStatus();
   const running = backend?.state === 'running';
   const state = useAsync(() => api<T>('GET', path), [running]);
@@ -65,6 +69,12 @@ export function KickModerationPage() {
   const { data, error, reload } = useModeration<KickModerationState>('/api/moderation/kick');
   if (!data) return <Waiting error={error} what="Kick moderation" />;
   return <KickModerationView s={data} onChanged={reload} />;
+}
+
+export function TwitchModerationPage() {
+  const { data, error, reload } = useModeration<TwitchModerationState>('/api/moderation/twitch');
+  if (!data) return <Waiting error={error} what="Twitch moderation" />;
+  return <TwitchModerationView s={data} onChanged={reload} />;
 }
 
 /** Discord Bot: the bot's settings, its protection and its logs, as tabs (the last one opened is remembered). */
@@ -147,15 +157,16 @@ export function KickModerationView({ s, onChanged }: { s: KickModerationState; o
   const events = s.automod.kickModerationEvents;
   return (
     <div className="stack">
-      <AutomodCard key={JSON.stringify(s.automod.kick)} automod={s.automod} kickConnected={s.connected} onSaved={onChanged} />
+      <AutomodCard key={JSON.stringify(s.automod.kick)} platform="kick" protection={kickProtection(s.automod)} connected={s.connected} onSaved={onChanged} />
       {person ? (
         <UserHistory platform="kick" person={person} onBack={() => setPerson(null)}>
-          {(h) => <LogsCard platform="kick" history={h.history} />}
+          {(h) => <LogsCard platform="kick" history={h.history} intro={`Everything recorded for ${person.name} in your Kick chat.`} />}
         </UserHistory>
       ) : (
         <LogsCard
           platform="kick"
           history={s.history}
+          intro="What automated protection and moderation commands did in your Kick chat, and bans and timeouts done on Kick itself (by you, your moderators or other bots). Select a name to see everything for that person."
           onUser={(id, name) => setPerson({ id, name })}
           extra={s.connected && !events.ok && events.problem ? <p className="small text-warn">{events.problem}</p> : undefined}
         />
@@ -164,11 +175,116 @@ export function KickModerationView({ s, onChanged }: { s: KickModerationState; o
   );
 }
 
+/** Kick's part of the moderation state, in the form every platform's protection card takes. */
+export function kickProtection(automod: AutomodState): ChatProtectionState {
+  return { settings: automod.kick, actions: automod.kickActions, raid: automod.raid, stats: automod.stats };
+}
+
+// ── Twitch ───────────────────────────────────────────────────────────────────
+
+export function TwitchModerationView({ s, onChanged }: { s: TwitchModerationState; onChanged?: () => void }) {
+  const [person, setPerson] = useState<{ id: string; name: string } | null>(null);
+  const events = s.moderationEvents;
+  return (
+    <div className="stack">
+      <TwitchChatModes connected={s.connected} />
+      <AutomodCard key={JSON.stringify(s.protection.settings)} platform="twitch" protection={s.protection} connected={s.connected} onSaved={onChanged} />
+      {person ? (
+        <UserHistory platform="twitch" person={person} onBack={() => setPerson(null)}>
+          {(h) => <LogsCard platform="twitch" history={h.history} intro={`Everything recorded for ${person.name} in your Twitch chat.`} />}
+        </UserHistory>
+      ) : (
+        <LogsCard
+          platform="twitch"
+          history={s.history}
+          intro="What automated protection and moderation commands did in your Twitch chat, and bans and timeouts done on Twitch itself (by you, your moderators or other bots). Select a name to see everything for that person."
+          onUser={(id, name) => setPerson({ id, name })}
+          extra={s.connected && !events.ok && events.problem ? <p className="small text-warn">{events.problem}</p> : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Loads Twitch's chat modes once (they come from Twitch, so they aren't polled with the rest of the page). */
+function TwitchChatModes({ connected }: { connected: boolean }) {
+  const { data, error, reload } = useAsync(() => api<TwitchChatModesState>('GET', '/api/moderation/twitch/chat-modes'), [connected]);
+  return <ChatModesCard key={JSON.stringify(data)} state={data ?? null} loadError={error} onChanged={reload} />;
+}
+
+const CHAT_MODES: ReadonlyArray<{ key: 'slowMode' | 'followersOnly' | 'subscribersOnly' | 'emoteOnly' | 'uniqueChat'; label: string }> = [
+  { key: 'slowMode', label: 'Slow mode' },
+  { key: 'followersOnly', label: 'Followers-only' },
+  { key: 'subscribersOnly', label: 'Subscribers-only' },
+  { key: 'emoteOnly', label: 'Emote-only' },
+  { key: 'uniqueChat', label: 'Unique chat' },
+];
+
+/** Twitch's own chat modes and Shield Mode: each switch changes it on Twitch straight away. */
+export function ChatModesCard({ state, loadError = null, onChanged }: { state: TwitchChatModesState | null; loadError?: unknown; onChanged?: () => void }) {
+  const modes = state?.modes ?? null;
+  const [seconds, setSeconds] = useState(modes?.slowSeconds ?? 30);
+  const [minutes, setMinutes] = useState(modes?.followerMinutes ?? 0);
+  const { busy, error, call } = useAction(onChanged);
+  const save = (patch: Partial<TwitchChatModes>) => void call(() => api('POST', '/api/moderation/twitch/chat-modes', { ...modes, ...patch }));
+  const row = (label: string, on: boolean, onSwitch: (on: boolean) => void, value?: React.ReactNode) => (
+    <li key={label} className="protection-row">
+      <div className="protection-row-head">
+        <span className="protection-switch">
+          <label className="switch switch-onoff">
+            <input type="checkbox" aria-label={`${label} ${on ? 'on' : 'off'}`} checked={on} disabled={busy} onChange={(e) => onSwitch(e.target.checked)} />
+          </label>
+        </span>
+        <div className="protection-row-text">
+          <strong>{label}</strong>
+        </div>
+        {value}
+      </div>
+    </li>
+  );
+  const amount = (label: string, unit: string, value: number, saved: number, max: number, onChange: (n: number) => void, onCommit: () => void) => (
+    <span className="rule-inline">
+      <input aria-label={label} className="num" type="number" min={0} max={max} value={value} disabled={busy} onChange={(e) => onChange(Number(e.target.value))} onBlur={() => value !== saved && onCommit()} />
+      <span>{unit}</span>
+    </span>
+  );
+  return (
+    <section className="card" aria-labelledby="twitch-chat-modes">
+      <h2 id="twitch-chat-modes">Chat Modes</h2>
+      <p className="muted small">Twitch’s own chat modes. Each switch changes it on Twitch straight away.</p>
+      {(error ?? loadError) !== null && (
+        <p className="connection-note note-error" role="alert">
+          {errorMessage(error ?? loadError)}
+        </p>
+      )}
+      {state?.problem && <p className="small text-warn">{state.problem}</p>}
+      {!state && loadError === null && <p className="muted">Loading…</p>}
+      {modes && (
+        <ul className="protection-list">
+          {row('Shield Mode', state!.shieldMode === true, (on) => void call(() => api('POST', '/api/moderation/twitch/shield-mode', { active: on })))}
+          {CHAT_MODES.map(({ key, label }) =>
+            row(
+              label,
+              modes[key],
+              (on) => save({ [key]: on }),
+              modes[key] && key === 'slowMode'
+                ? amount('Seconds between messages', 'seconds', seconds, modes.slowSeconds, 120, setSeconds, () => save({ slowSeconds: seconds }))
+                : modes[key] && key === 'followersOnly'
+                  ? amount('Minutes followed', 'minutes', minutes, modes.followerMinutes, 129_600, setMinutes, () => save({ followerMinutes: minutes }))
+                  : undefined,
+            ),
+          )}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 /**
  * One person's history (from the backend, not just what the log shows): loaded when a name is selected in the Logs,
  * with a way back to everyone.
  */
-function UserHistory({ platform, person, onBack, children }: { platform: 'kick' | 'discord'; person: { id: string; name: string }; onBack: () => void; children: (h: ModerationUserHistory) => React.ReactNode }) {
+function UserHistory({ platform, person, onBack, children }: { platform: 'kick' | 'twitch' | 'discord'; person: { id: string; name: string }; onBack: () => void; children: (h: ModerationUserHistory) => React.ReactNode }) {
   const { data, error } = useAsync(() => api<ModerationUserHistory>('POST', '/api/moderation/user-history', { platform, userId: person.id }), [platform, person.id]);
   return (
     <div className="stack">
@@ -347,6 +463,11 @@ export function DiscordCommandLog({ s, onUser, title }: { s: DiscordModerationSt
   return (
     <section className="card" aria-labelledby="discord-logs">
       <h2 id="discord-logs">{title ?? 'Moderation log'}</h2>
+      <p className="muted small">
+        Everything in your server, newest first: commands, protection, moderation (including Discord’s own and other bots’),
+        Discord Logging, and Loyalty &amp; Rewards. To see moderation done outside CONDUIT, the bot needs the View Audit Log
+        permission.{onUser && ' Click a name to see that member’s history.'}
+      </p>
       <DiscordCommandsNote s={s} />
       {rows.length === 0 ? (
         <p className="empty-note">Nothing logged yet.</p>
@@ -409,15 +530,33 @@ function DiscordCommandsNote({ s }: { s: DiscordModerationState }) {
   );
 }
 
-// ── automated protection (Kick) ──────────────────────────────────────────────
+// ── automated protection (Kick and Twitch) ───────────────────────────────────
+
+/** Where each platform's protection saves, and its name in the wording. */
+const PROTECTION_PLATFORM = {
+  kick: {
+    label: 'Kick',
+    automod: '/api/moderation/automod',
+    raid: '/api/moderation/raid',
+    raidNote: 'Kick doesn’t let apps change its chat modes (like slow or followers-only), so CONDUIT doesn’t.',
+  },
+  twitch: {
+    label: 'Twitch',
+    automod: '/api/moderation/twitch/automod',
+    raid: '/api/moderation/twitch/raid',
+    raidNote: 'Raid mode doesn’t change the chat modes; switch on Shield Mode above if you want it too.',
+  },
+} as const;
+const ProtectionPlatform = createContext<keyof typeof PROTECTION_PLATFORM>('kick');
+const useProtectionPlatform = () => PROTECTION_PLATFORM[useContext(ProtectionPlatform)];
 
 type RuleKey = 'blockedTerms' | 'links' | 'caps' | 'emotes' | 'symbols' | 'longMessage' | 'repeat' | 'spam';
 /** The six spam-type checks: one row, with a table of them (like Discord's Message checks). */
 type SpamKey = Exclude<RuleKey, 'blockedTerms' | 'links'>;
-export type KickRow = 'blockedTerms' | 'links' | 'spamChecks' | 'raid' | 'ignored';
-const RULES: ReadonlyArray<{ key: 'blockedTerms' | 'links'; label: string }> = [
-  { key: 'blockedTerms', label: AUTOMOD_RULE_LABEL.blocked_terms },
-  { key: 'links', label: AUTOMOD_RULE_LABEL.links },
+export type ProtectionRow = 'blockedTerms' | 'links' | 'spamChecks' | 'raid' | 'ignored';
+const RULES: ReadonlyArray<{ key: 'blockedTerms' | 'links'; label: string; what: string }> = [
+  { key: 'blockedTerms', label: AUTOMOD_RULE_LABEL.blocked_terms, what: 'Messages with words, phrases or patterns from your list.' },
+  { key: 'links', label: AUTOMOD_RULE_LABEL.links, what: 'Links, except to sites you allow.' },
 ];
 const SPAM_CHECKS: ReadonlyArray<{ key: SpamKey; label: string }> = [
   { key: 'caps', label: AUTOMOD_RULE_LABEL.caps },
@@ -462,8 +601,8 @@ const lines = (text: string) =>
     .map((t) => t.trim())
     .filter(Boolean);
 
-/** Saves the whole settings object (or calls another protection endpoint); the error shows on the card. */
-function useKickSave(onSaved?: () => void) {
+/** Runs a change on the backend; the error shows on the card. */
+function useAction(onDone?: () => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const call = async (fn: () => Promise<unknown>): Promise<boolean> => {
@@ -471,7 +610,7 @@ function useKickSave(onSaved?: () => void) {
     setError(null);
     try {
       await fn();
-      onSaved?.();
+      onDone?.();
       return true;
     } catch (err) {
       setError(err);
@@ -480,37 +619,50 @@ function useKickSave(onSaved?: () => void) {
       setBusy(false);
     }
   };
-  const save = (next: AutomodSettings) => call(() => api<AutomodState>('POST', '/api/moderation/automod', next));
-  return { busy, error, save, call };
+  return { busy, error, call };
+}
+
+/** Saves the whole settings object (or calls another protection endpoint). */
+function useProtectionSave(onSaved?: () => void) {
+  const { automod } = useProtectionPlatform();
+  const action = useAction(onSaved);
+  const save = (next: AutomodSettings) => action.call(() => api('POST', automod, next));
+  return { ...action, save };
 }
 
 /**
- * Kick Moderation → Automated Protection, laid out like Discord Bot → Protection: one compact list with a row per check
+ * Kick and Twitch Moderation → Automated Protection, laid out like Discord Bot → Protection: one compact list with a row per check
  * (what it does, its status, an on/off switch and Configure, which opens its settings below its row, one at a time).
  * The switches save straight away; each check's settings have their own Save.
  */
-export function AutomodCard({
-  automod,
-  kickConnected,
-  onSaved,
-  initialOpen = null,
-}: {
-  automod: AutomodState;
-  kickConnected: boolean;
+export function AutomodCard({ platform, ...card }: AutomodCardProps & { platform: keyof typeof PROTECTION_PLATFORM }) {
+  return (
+    <ProtectionPlatform.Provider value={platform}>
+      <AutomodList platform={platform} {...card} />
+    </ProtectionPlatform.Provider>
+  );
+}
+
+interface AutomodCardProps {
+  protection: ChatProtectionState;
+  connected: boolean;
   onSaved?: () => void;
   /** The check whose settings start open (tests). */
-  initialOpen?: KickRow | null;
-}) {
-  const saved = automod.kick;
-  const [open, setOpen] = useState<KickRow | null>(initialOpen);
-  const { busy, error, save } = useKickSave(onSaved);
-  const unavailable = AUTOMOD_ACTIONS.filter((a) => !automod.kickActions[a].available);
+  initialOpen?: ProtectionRow | null;
+}
+
+function AutomodList({ platform, protection, connected, onSaved, initialOpen = null }: AutomodCardProps & { platform: string }) {
+  const { label: chat } = useProtectionPlatform();
+  const saved = protection.settings;
+  const [open, setOpen] = useState<ProtectionRow | null>(initialOpen);
+  const { busy, error, save } = useProtectionSave(onSaved);
+  const unavailable = AUTOMOD_ACTIONS.filter((a) => !protection.actions[a].available);
   const ignoredStatus = [saved.exemptModerators ? 'Moderators' : null, saved.ignoredUsers.length ? `${saved.ignoredUsers.length} user${saved.ignoredUsers.length === 1 ? '' : 's'}` : null]
     .filter(Boolean)
     .join(' · ');
-  const raid = raidSummary(saved, automod.raid);
-  const toggle = (row: KickRow) => setOpen(open === row ? null : row);
-  const row = (key: KickRow, label: string, status: { text: string; tone: keyof typeof TONE_PILL }, on: boolean | null, onSwitch: (on: boolean) => void, panel: React.ReactNode) => (
+  const raid = raidSummary(saved, protection.raid);
+  const toggle = (row: ProtectionRow) => setOpen(open === row ? null : row);
+  const row = (key: ProtectionRow, label: string, what: string, status: { text: string; tone: keyof typeof TONE_PILL }, on: boolean | null, onSwitch: (on: boolean) => void, panel: React.ReactNode) => (
     <li key={key} className={`protection-row${open === key ? ' is-open' : ''}`}>
       <div className="protection-row-head">
         <span className="protection-switch">
@@ -522,6 +674,7 @@ export function AutomodCard({
         </span>
         <div className="protection-row-text">
           <strong>{label}</strong>
+          <span className="muted small">{what}</span>
         </div>
         <span className={`pill ${TONE_PILL[status.tone]}`}>{status.text}</span>
         <Button variant="secondary" className="btn-row" aria-expanded={open === key} onClick={() => toggle(key)}>
@@ -532,15 +685,18 @@ export function AutomodCard({
     </li>
   );
   return (
-    <section className="card" aria-labelledby="kick-automod">
+    <section className="card" aria-labelledby={`${platform}-automod`}>
       <div className="card-head">
-        <h2 id="kick-automod">Automated Protection</h2>
+        <div>
+          <h2 id={`${platform}-automod`}>Automated Protection</h2>
+          <p className="muted small">Checks each new message in your {chat} chat. Off until you switch it on; each check only logs until you choose an action.</p>
+        </div>
         <label className="switch">
           <input
             type="checkbox"
             aria-label={`Automated Protection ${saved.enabled ? 'on' : 'off'}`}
             checked={saved.enabled}
-            disabled={!kickConnected || busy}
+            disabled={!connected || busy}
             onChange={(e) => void save({ ...saved, enabled: e.target.checked })}
           />
           <span>{saved.enabled ? 'On' : 'Off'}</span>
@@ -552,46 +708,50 @@ export function AutomodCard({
         </p>
       )}
       <ul className={`protection-list${saved.enabled ? '' : ' rules-off'}`}>
-        {RULES.map(({ key, label }) =>
+        {RULES.map(({ key, label, what }) =>
           row(
             key,
             label,
+            what,
             ruleSummary(saved, key),
             saved[key].enabled,
             (on) => void save({ ...saved, [key]: { ...saved[key], enabled: on } }),
-            <KickRulePanel key={JSON.stringify(saved)} rule={key} saved={saved} automod={automod} onSaved={onSaved} />,
+            <RulePanel key={JSON.stringify(saved)} rule={key} saved={saved} protection={protection} onSaved={onSaved} />,
           ),
         )}
         {row(
           'spamChecks',
           'Spam checks',
+          'Caps, emote and symbol spam, long messages, repeats and flooding.',
           spamSummary(saved),
           null,
           () => {},
-          <KickSpamPanel key={JSON.stringify(saved)} saved={saved} automod={automod} onSaved={onSaved} />,
+          <SpamPanel key={JSON.stringify(saved)} saved={saved} protection={protection} onSaved={onSaved} />,
         )}
         {row(
           'raid',
           AUTOMOD_RULE_LABEL.raid,
+          'When many first-time chatters arrive at once, CONDUIT is stricter with them for a few minutes.',
           raid,
           saved.raid.enabled,
           (on) => void save({ ...saved, raid: { ...saved.raid, enabled: on } }),
-          <KickRaidPanel key={JSON.stringify([saved, automod.raid])} saved={saved} automod={automod} onSaved={onSaved} />,
+          <RaidPanel key={JSON.stringify([saved, protection.raid])} saved={saved} protection={protection} onSaved={onSaved} />,
         )}
         {row(
           'ignored',
           'Ignored users',
+          'People the checks skip. You and the chatbot are always skipped.',
           { text: ignoredStatus || 'Nobody else', tone: 'muted' },
           null,
           () => {},
-          <KickIgnoredPanel key={JSON.stringify(saved)} saved={saved} onSaved={onSaved} />,
+          <IgnoredPanel key={JSON.stringify(saved)} saved={saved} onSaved={onSaved} />,
         )}
       </ul>
-      {unavailable.length > 0 && kickConnected && (
-        <p className="small text-warn">{unavailable.map((a) => `${AUTOMOD_ACTION_LABEL[a]}: ${automod.kickActions[a].problem}`).join(' ')}</p>
+      {unavailable.length > 0 && connected && (
+        <p className="small text-warn">{unavailable.map((a) => `${AUTOMOD_ACTION_LABEL[a]}: ${protection.actions[a].problem}`).join(' ')}</p>
       )}
       <p className="muted small" title="Since CONDUIT started">
-        {automod.stats.checked} checked · {automod.stats.matched} matched
+        {protection.stats.checked} checked · {protection.stats.matched} matched
       </p>
     </section>
   );
@@ -604,6 +764,7 @@ function schemaErrors(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; 
 
 /** Save / Discard for one check's settings, with the warning that saving lets CONDUIT act. */
 function PanelFoot({ changed, acting, busy, message, onSave, onDiscard }: { changed: boolean; acting: boolean; busy: boolean; message: { ok: boolean; text: string } | null; onSave: () => void; onDiscard: () => void }) {
+  const { label } = useProtectionPlatform();
   return (
     <div className="form-actions">
       <Button disabled={!changed || busy} busy={busy} onClick={onSave}>
@@ -614,7 +775,7 @@ function PanelFoot({ changed, acting, busy, message, onSave, onDiscard }: { chan
           Discard
         </Button>
       )}
-      {changed && acting && <span className="small text-warn">Saving lets CONDUIT act on Kick automatically.</span>}
+      {changed && acting && <span className="small text-warn">Saving lets CONDUIT act on {label} automatically.</span>}
       {message && (
         <span className={`small ${message.ok ? 'text-ok' : 'text-bad'}`} role={message.ok ? 'status' : 'alert'}>
           {message.text}
@@ -628,7 +789,7 @@ function PanelFoot({ changed, acting, busy, message, onSave, onDiscard }: { chan
 function usePanelSave(onSaved?: () => void) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const { busy, error, save } = useKickSave(onSaved);
+  const { busy, error, save } = useProtectionSave(onSaved);
   const submit = async (next: AutomodSettings) => {
     const checked = automodSettingsSchema.safeParse(next);
     if (!checked.success) {
@@ -649,7 +810,7 @@ const num = (label: string, value: number, min: number, max: number, onChange: (
 );
 
 /** One check's settings: what it looks for and what it does. */
-function KickRulePanel({ rule, saved, automod, onSaved }: { rule: 'blockedTerms' | 'links'; saved: AutomodSettings; automod: AutomodState; onSaved?: () => void }) {
+function RulePanel({ rule, saved, protection, onSaved }: { rule: 'blockedTerms' | 'links'; saved: AutomodSettings; protection: ChatProtectionState; onSaved?: () => void }) {
   const [draft, setDraft] = useState<AutomodSettings[RuleKey]>(saved[rule]);
   const [terms, setTerms] = useState(saved.blockedTerms.terms.join('\n'));
   const [patterns, setPatterns] = useState(saved.blockedTerms.regexPatterns.join('\n'));
@@ -679,18 +840,23 @@ function KickRulePanel({ rule, saved, automod, onSaved }: { rule: 'blockedTerms'
             {text('Words and phrases, one per line (* as a wildcard)', terms, setTerms)}
             {text('Regular expressions, one per line (up to 10)', patterns, setPatterns)}
           </div>
+          <p className="muted small">
+            <code>cat</code> matches the word “cat”; <code>cat*</code> words starting with it, <code>*cat</code> words ending with it, <code>*cat*</code> anywhere.
+            Capital letters and fancy fonts don’t matter.
+          </p>
           {text('Allowed words (never matched; one per line)', allowed, setAllowed, 2)}
         </>
       )}
       {rule === 'links' && (
         <>
           {text('Allowed sites, one per line (their subdomains too)', sites, setSites, 3)}
+          <p className="muted small">Any other link counts: with http(s)://, www., or a site like example.com.</p>
         </>
       )}
       <ActionFields
         action={draft.action}
         timeoutMinutes={draft.timeoutMinutes}
-        automod={automod}
+        protection={protection}
         actions={AUTOMOD_ACTIONS}
         onChange={(patch) => set(patch)}
       />
@@ -719,13 +885,13 @@ function KickRulePanel({ rule, saved, automod, onSaved }: { rule: 'blockedTerms'
 function ActionFields({
   action,
   timeoutMinutes,
-  automod,
+  protection,
   actions,
   onChange,
 }: {
   action: AutomodAction;
   timeoutMinutes: number;
-  automod: AutomodState;
+  protection: ChatProtectionState;
   actions: readonly AutomodAction[];
   onChange: (patch: { action?: AutomodAction; timeoutMinutes?: number }) => void;
 }) {
@@ -735,9 +901,9 @@ function ActionFields({
         <span className="field-label">Then</span>
         <select value={action} onChange={(e) => onChange({ action: e.target.value as AutomodAction })}>
           {actions.map((a) => (
-            <option key={a} value={a} disabled={!automod.kickActions[a].available}>
+            <option key={a} value={a} disabled={!protection.actions[a].available}>
               {AUTOMOD_ACTION_LABEL[a]}
-              {!automod.kickActions[a].available ? ' (unavailable)' : ''}
+              {!protection.actions[a].available ? ' (unavailable)' : ''}
             </option>
           ))}
         </select>
@@ -753,7 +919,8 @@ function ActionFields({
 }
 
 /** The spam checks as one table (like Discord's Message checks): on/off, what each matches, and what it does. One Save. */
-function KickSpamPanel({ saved, automod, onSaved }: { saved: AutomodSettings; automod: AutomodState; onSaved?: () => void }) {
+function SpamPanel({ saved, protection, onSaved }: { saved: AutomodSettings; protection: ChatProtectionState; onSaved?: () => void }) {
+  const { label: platformLabel } = useProtectionPlatform();
   const pick = (s: AutomodSettings) => Object.fromEntries(SPAM_CHECKS.map(({ key }) => [key, s[key]])) as Pick<AutomodSettings, SpamKey>;
   const [draft, setDraft] = useState(pick(saved));
   const p = usePanelSave(onSaved);
@@ -792,7 +959,7 @@ function KickSpamPanel({ saved, automod, onSaved }: { saved: AutomodSettings; au
                       {n('caps', 'percent', 'Capital letters (%)', 50, 100)}% capitals, in messages with at least {n('caps', 'minLetters', 'Minimum letters', 5, 500)} letters
                     </>
                   )}
-                  {key === 'emotes' && <>More than {n('emotes', 'maxEmotes', 'Emotes', 1, 100)} emotes (Kick emotes and emoji) in one message</>}
+                  {key === 'emotes' && <>More than {n('emotes', 'maxEmotes', 'Emotes', 1, 100)} emotes ({platformLabel} emotes and emoji) in one message</>}
                   {key === 'symbols' && <>{n('symbols', 'percent', 'Symbols (%)', 30, 100)}% symbols (10+ characters), or stacked accent marks</>}
                   {key === 'longMessage' && <>More than {n('longMessage', 'maxLength', 'Characters', 20, 500)} characters (an emote counts as one)</>}
                   {key === 'repeat' && (
@@ -810,9 +977,9 @@ function KickSpamPanel({ saved, automod, onSaved }: { saved: AutomodSettings; au
                 <td className="small">
                   <select aria-label={`${label} action`} value={draft[key].action} onChange={(e) => set(key, { action: e.target.value as AutomodAction })}>
                     {AUTOMOD_ACTIONS.map((a) => (
-                      <option key={a} value={a} disabled={!automod.kickActions[a].available}>
+                      <option key={a} value={a} disabled={!protection.actions[a].available}>
                         {AUTOMOD_ACTION_LABEL[a]}
-                        {!automod.kickActions[a].available ? ' (unavailable)' : ''}
+                        {!protection.actions[a].available ? ' (unavailable)' : ''}
                       </option>
                     ))}
                   </select>
@@ -836,14 +1003,15 @@ function KickSpamPanel({ saved, automod, onSaved }: { saved: AutomodSettings; au
 }
 
 /** Raid mode: when it starts, how long it lasts, what it does to newcomers, and the chat message. Start/End now. */
-function KickRaidPanel({ saved, automod, onSaved }: { saved: AutomodSettings; automod: AutomodState; onSaved?: () => void }) {
+function RaidPanel({ saved, protection, onSaved }: { saved: AutomodSettings; protection: ChatProtectionState; onSaved?: () => void }) {
   const [draft, setDraft] = useState(saved.raid);
   const p = usePanelSave(onSaved);
-  const now = useKickSave(onSaved);
+  const now = useProtectionSave(onSaved);
+  const { raid: raidPath, raidNote } = useProtectionPlatform();
   const next = { ...saved, raid: draft };
   const changed = JSON.stringify(draft) !== JSON.stringify(saved.raid);
   const set = (patch: Partial<AutomodSettings['raid']>) => (setDraft({ ...draft, ...patch }), p.setMessage(null));
-  const active = automod.raid.activeUntil !== null;
+  const active = protection.raid.activeUntil !== null;
   return (
     <div className="protection-panel">
       <div className="rule-inline">
@@ -855,11 +1023,14 @@ function KickRaidPanel({ saved, automod, onSaved }: { saved: AutomodSettings; au
         {num('Minutes', draft.durationMinutes, 1, 60, (durationMinutes) => set({ durationMinutes }))}
         <span>minutes</span>
       </div>
-      {automod.raid.learning && <p className="muted small">Learning your regulars ({automod.raid.knownChatters} chatters so far)</p>}
+      <p className="muted small">
+        While it’s on, a first-time chatter’s message with a link, or that any check above matches (even one set to Log only), is acted on. {raidNote}
+      </p>
+      {protection.raid.learning && <p className="muted small">Learning your regulars ({protection.raid.knownChatters} chatters so far)</p>}
       <ActionFields
         action={draft.action}
         timeoutMinutes={draft.timeoutMinutes}
-        automod={automod}
+        protection={protection}
         actions={['delete_message', 'timeout']}
         onChange={(patch) => set(patch as Partial<AutomodSettings['raid']>)}
       />
@@ -878,7 +1049,7 @@ function KickRaidPanel({ saved, automod, onSaved }: { saved: AutomodSettings; au
       />
       {saved.enabled && saved.raid.enabled && (
         <div className="button-row">
-          <Button variant={active ? 'secondary' : 'danger'} busy={now.busy} onClick={() => void now.call(() => api('POST', '/api/moderation/raid', { active: !active }))}>
+          <Button variant={active ? 'secondary' : 'danger'} busy={now.busy} onClick={() => void now.call(() => api('POST', raidPath, { active: !active }))}>
             {active ? 'End raid mode' : 'Start raid mode now'}
           </Button>
           {now.error !== null && <span className="small text-bad">{errorMessage(now.error)}</span>}
@@ -888,17 +1059,18 @@ function KickRaidPanel({ saved, automod, onSaved }: { saved: AutomodSettings; au
   );
 }
 
-/** Who the checks skip: Kick usernames, and optionally moderators. */
-function KickIgnoredPanel({ saved, onSaved }: { saved: AutomodSettings; onSaved?: () => void }) {
+/** Who the checks skip: usernames, and optionally moderators. */
+function IgnoredPanel({ saved, onSaved }: { saved: AutomodSettings; onSaved?: () => void }) {
   const [ignored, setIgnored] = useState(saved.ignoredUsers.join('\n'));
   const [moderators, setModerators] = useState(saved.exemptModerators);
+  const { label } = useProtectionPlatform();
   const p = usePanelSave(onSaved);
   const next: AutomodSettings = { ...saved, ignoredUsers: lines(ignored), exemptModerators: moderators };
   const changed = JSON.stringify(next) !== JSON.stringify(saved);
   return (
     <div className="protection-panel">
       <label className="field rule-terms">
-        <span className="field-label">Kick usernames, one per line</span>
+        <span className="field-label">{label} usernames, one per line</span>
         <textarea rows={3} value={ignored} onChange={(e) => (setIgnored(e.target.value), p.setMessage(null))} />
       </label>
       {p.fieldError('ignoredUsers') && <span className="field-error">{p.fieldError('ignoredUsers')}</span>}
@@ -933,13 +1105,13 @@ function formatDuration(seconds: number): string {
   return `${seconds} s`;
 }
 
-/** What started it: an automated rule, a Discord command ("name via /ban" → "/ban by name"), or the account used. */
+/** What started it: an automated rule, a moderation command ("name via /ban" → "/ban by name"), or the account used. */
 export function eventLabel(r: ModerationRecordView): string {
   if (r.source === 'automod') return r.rule ? AUTOMOD_RULE_LABEL[r.rule] : 'Automated protection';
-  // Done on Kick itself (Kick's own buttons or another bot), from Kick's ban and timeout events.
-  if (r.source === 'platform') return `On Kick by ${r.actor ?? 'a moderator'}`;
-  const via = r.actor ? /^(.*) via \/([a-z]+)$/.exec(r.actor) : null;
-  if (via) return `/${via[2]} by ${via[1]}`;
+  // Done on Kick or Twitch itself (their own buttons or another bot), from their ban and timeout events.
+  if (r.source === 'platform') return `On ${r.platform === 'twitch' ? 'Twitch' : 'Kick'} by ${r.actor ?? 'a moderator'}`;
+  const via = r.actor ? /^(.*) via ([/!][a-z]+)$/.exec(r.actor) : null;
+  if (via) return `${via[2]} by ${via[1]}`;
   return r.actor ? `Dashboard (${r.actor})` : 'Dashboard';
 }
 
@@ -969,11 +1141,13 @@ function LogDescription({ event, place, platform, result, detail }: { event: str
 export function LogsCard({
   platform,
   history,
+  intro,
   extra,
   onUser,
 }: {
   platform: ModerationPlatform;
   history: ModerationRecordView[];
+  intro: string;
   extra?: React.ReactNode;
   /** Selecting a name shows that person's history. */
   onUser?: (userId: string, name: string) => void;
@@ -982,6 +1156,7 @@ export function LogsCard({
   return (
     <section className="card" aria-labelledby={`${platform}-logs`}>
       <h2 id={`${platform}-logs`}>Logs</h2>
+      <p className="muted small">{intro}</p>
       {extra}
       {history.length === 0 ? (
         <p className="empty-note">Nothing logged yet.</p>

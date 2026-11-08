@@ -109,6 +109,7 @@ describe('the embed', () => {
     durationMinutes: null,
     allowKick: true,
     allowDiscord: true,
+    allowTwitch: false,
     createdAt: '2026-10-11T18:00:00.000Z',
     updatedAt: '2026-10-11T18:00:00.000Z',
     startedAt: '2026-10-11T18:00:00.000Z',
@@ -179,12 +180,12 @@ describe('the embed', () => {
     expect(fields(giveawayMessage({ ...base, allowKick: false }, { winners: [] }))['How to enter']).toBe('Click **🎉 Enter Giveaway** below.');
   });
 
-  it('drawn: current winners as mentions (Kick winners by name), replaced ones left out, bounded', () => {
+  it('drawn: current winners as mentions (Kick and Twitch winners by name), replaced ones left out, bounded', () => {
     const drawn = { ...base, status: 'drawn' as const, drawnAt: '2026-10-11T19:00:00.000Z' };
     const m = giveawayMessage(drawn, {
-      winners: [winner(1, { status: 'replaced', replacedAt: 'y' }), winner(1, { id: 'w9', platformUserId: '900000000000000009' }), winner(2, { platform: 'kick', displayName: 'kickfan' })],
+      winners: [winner(1, { status: 'replaced', replacedAt: 'y' }), winner(1, { id: 'w9', platformUserId: '900000000000000009' }), winner(2, { platform: 'kick', displayName: 'kickfan' }), winner(3, { platform: 'twitch', displayName: 'twitchfan' })],
     });
-    expect(fields(m)['🏆 Winners']).toBe('1. <@900000000000000009>\n2. kickfan (Kick)');
+    expect(fields(m)['🏆 Winners']).toBe('1. <@900000000000000009>\n2. kickfan (Kick)\n3. twitchfan (Twitch)');
     expect(fields(m).Note).toBe('Some winners were redrawn by the host.');
     const many = Array.from({ length: 50 }, (_, i) => winner(i + 1, { platform: 'kick', displayName: 'x'.repeat(100) }));
     const big = fields(giveawayMessage(drawn, { winners: many }))['🏆 Winners']!;

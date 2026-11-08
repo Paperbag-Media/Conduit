@@ -2,17 +2,17 @@ import { execute, queryAll, queryOne, type Database } from '../sqlite';
 
 export type ModerationActionKind = 'timeout' | 'untimeout' | 'ban' | 'unban' | 'delete_message' | 'flag';
 
-/** The rules of Kick's automated protection (and raid mode), as stored. */
+/** The rules of automated chat protection (and raid mode), as stored. */
 export type ModerationRuleName = 'blocked_terms' | 'repeat' | 'spam' | 'caps' | 'links' | 'emotes' | 'long_message' | 'symbols' | 'raid';
 
 /**
- * One moderation action taken (or attempted) through CONDUIT, or (source 'platform') done on Kick itself, from Kick's
- * moderation.banned events.
+ * One moderation action taken (or attempted) through CONDUIT, or (source 'platform') done on Kick or Twitch itself, from
+ * their ban events.
  */
 export interface ModerationRecord {
   id: string;
   createdAt: string;
-  platform: 'discord' | 'kick';
+  platform: 'discord' | 'kick' | 'twitch';
   placeId: string | null;
   placeName: string | null;
   action: ModerationActionKind;

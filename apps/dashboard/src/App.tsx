@@ -42,6 +42,7 @@ const PAGES: Record<string, LazyExoticComponent<ComponentType>> = {
   'kick-notifications': page(() => import('./pages/kick/KickNotificationsPage'), 'KickNotificationsPage'),
   'kick-clips': page(() => import('./pages/kick/KickClipsPage'), 'KickClipsPage'),
   'twitch-notifications': page(() => import('./pages/twitch/TwitchNotificationsPage'), 'TwitchNotificationsPage'),
+  'twitch-moderation': page(() => import('./pages/community/ModerationPage'), 'TwitchModerationPage'),
   settings: lazy(() => import('./pages/app/SettingsPage')),
 };
 
@@ -152,7 +153,10 @@ export function App() {
 
       <main className="content">
         <header className="topbar">
-          <h1>{active.label}</h1>
+          <div className="topbar-title">
+            <h1>{active.label}</h1>
+            <p className="topbar-summary">{active.summary}</p>
+          </div>
           <StatusPill status={backendStatus} />
           <div className="page-actions" ref={setActionsSlot} />
         </header>

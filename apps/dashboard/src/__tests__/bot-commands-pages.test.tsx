@@ -98,7 +98,7 @@ describe('Commands hub', () => {
 
   it('Kick: default commands as on / off | Command | Access | Description, without a Status column', async () => {
     const t = text(await render(hub({ defaults: [{ trigger: '!enter', description: 'Enter the current giveaway', permission: 'everyone' as const, enabled: true, canDisable: false, inactiveReason: null, args: [], example: '!enter', message: null }] })));
-    expect(t).toMatch(/Default Commands 1 Custom Commands 0 On \/ off Command Access Message !enter Anyone No reply/);
+    expect(t).toMatch(/Default Commands 1 Custom Commands 0 Built into CONDUIT; .+ main Kick account\. On \/ off Command Access Message !enter Anyone No reply Example: !enter/);
     expect(t).not.toMatch(/Status/);
   });
 
@@ -123,18 +123,19 @@ describe('Commands hub', () => {
     ];
     const html = await render(hub({ defaults }));
     const t = text(html);
-    // The Message column: the reply with its {variables} marked; the description and an example are the tooltip.
+    // The Message column: the reply with its {variables} marked, and an example under it; the description is the tooltip.
     expect(t).toMatch(/!timeout Moderators? \{name\} is timed out for \{minutes\} minutes\./);
-    expect(t).not.toContain('Example:');
+    expect(t).toContain('Example:');
     expect(html).toContain('<span class="command-message"><code class="command-var">{name}</code> is timed out for <code class="command-var">{minutes}</code> minutes.</span>');
-    expect(html).toContain('<code title="!timeout description\n!timeout @troll 10 spamming">!timeout</code>');
+    expect(html).toContain('<code title="!timeout description">!timeout</code>');
+    expect(t).toContain('Example: !timeout @troll 10 spamming');
     expect(t).toContain('No reply Your custom !followage answers instead');
     // Switches: on, off, and fixed on for !enter.
     expect(html).toMatch(/aria-label="!timeout on" checked=""/);
     expect(html).toMatch(/aria-label="!title off"(?![^>]*checked)/);
     expect(html).toMatch(/aria-label="!enter on" disabled="" checked=""/);
     expect(t).not.toContain('Edit access');
-    expect(t).not.toContain('A custom command with the same trigger answers instead of the default.');
+    expect(t).toContain('A custom command with the same trigger answers instead of the default. Moderator commands act with your main Kick account.');
   });
 
   it('each custom command starts with an on/off toggle (green on, red off); the row ends with Edit and Delete only', async () => {
@@ -232,8 +233,8 @@ describe('Command editor variables', () => {
     for (const v of ['{user}', '{touser}', '{args}', '{1}', '{random:1-6}', '{pick:heads;tails}', '{counter:deaths+1}', '{uptime}', '{submonths}']) expect(list).toContain(v);
     for (const v of ['{mention}', '{points}', '{server}']) expect(list).not.toContain(v); // Discord only
     const t = text(html);
-    expect(t).toContain('{touser|everyone} fallback');
-    expect(t).not.toMatch(/Examples|If nothing is given|Click one to insert/);
+    expect(t).toContain('Click one to insert it.');
+    expect(t).not.toMatch(/Examples|If nothing is given/);
     expect(html).toMatch(/<details class="variable-group" open=""><summary>User and input<\/summary>/);
   });
 
@@ -306,14 +307,14 @@ describe('Command editor permissions and cooldowns', () => {
 
   it('Kick: all four permission levels; who each one is shows on hover', async () => {
     const html = await editor('kick');
-    expect(text(html)).toMatch(/Permissions Anyone Subscribers Moderators Broadcaster only/);
-    expect(html).toContain('title="Subscribers (Kick subscriber badge), moderators and you"');
+    expect(text(html)).toMatch(/Permissions Anyone — .+ Subscribers — .+ Moderators — .+ Broadcaster only — /);
+    expect(html).toContain('<span class="muted small"> — Subscribers (Kick subscriber badge), moderators and you</span>');
   });
 
   it('Discord: no Subscribers level (Discord has none); Admin explained on hover', async () => {
     const html = await editor('discord');
     expect(html).not.toMatch(/value="subscriber"/);
-    expect(html).toContain('title="Members with Administrator (the server owner always has it)"');
+    expect(html).toContain('<span class="muted small"> — Members with Administrator (the server owner always has it)</span>');
   });
 
   it('cooldown: no duration field until a cooldown is chosen; then a seconds field with limits', async () => {

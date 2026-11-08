@@ -127,6 +127,18 @@ describe('moderator commands', () => {
     expect(history.some((r) => r.actor === 'Viewer via !ban')).toBe(true);
   });
 
+  it('a moderator can’t use them on another moderator (they act as the channel owner); you can, and the badge is kept up to date', async () => {
+    const MOD2: FakeKickUser = { user_id: 4242096, name: 'SeniorMod', slug: 'seniormod', profile_picture: null };
+    kick.directory.set(MOD2.slug, MOD2);
+    await say('hello chat', { from: MOD2 }); // seen with a moderator badge
+    await say('!ban seniormod');
+    await say('!timeout @seniormod 5', { from: kick.users.streamer });
+    await say('just a viewer now', { from: MOD2, mod: false }); // no longer a moderator
+    await say('!ban seniormod');
+    expect(await posts(3)).toEqual(['Moderators can’t be moderated from chat.', 'seniormod is timed out for 5 minutes.', 'seniormod is banned.']);
+    expect(kick.bans.get(MOD2.user_id)?.duration).toBeNull(); // the timeout, then the ban
+  });
+
   it('!addcom, !editcom and !delcom manage custom commands (same checks as the Commands page)', async () => {
     await say('!addcom !discord Join us at discord.gg/retro');
     await say('!discord', { mod: false });

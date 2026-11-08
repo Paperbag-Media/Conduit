@@ -37,6 +37,7 @@ export type AuditAction =
   | 'giveaway.messages_updated'
   | 'moderation.action'
   | 'moderation.automod_updated'
+  | 'moderation.twitch_chat_updated'
   | 'automation.created'
   | 'automation.updated'
   | 'automation.deleted'

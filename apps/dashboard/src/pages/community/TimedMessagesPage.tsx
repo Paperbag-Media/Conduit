@@ -33,6 +33,7 @@ export function TimedMessagesView({ s, onChanged }: { s: TimedMessagesState; onC
         </PageActions>
       )}
       <section className="card" aria-label="Timed messages">
+        <p className="muted small">Each one runs on its own schedule. Switch it on or off, edit, duplicate or delete it here.</p>
         {s.timedMessages.length === 0 && !editing ? (
           <p className="empty-note">No timed messages yet.</p>
         ) : (
@@ -47,6 +48,7 @@ export function TimedMessagesView({ s, onChanged }: { s: TimedMessagesState; onC
         <TimedEditor
           key={editing.mode === 'edit' ? editing.item.id : 'new'}
           initial={editing.mode === 'edit' ? editing.item : null}
+          s={s}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -170,7 +172,7 @@ export function toBody(d: Draft) {
     : { platform: 'discord' as const, name: d.name, enabled: d.enabled, guildId: d.guildId, channelId: d.channelId, message: { content: d.content, embed: d.useEmbed ? d.embed : null }, ...schedule };
 }
 
-function TimedEditor({ initial, onClose, onSaved }: { initial: TimedMessageView | null; onClose: () => void; onSaved: () => void }) {
+function TimedEditor({ initial, s, onClose, onSaved }: { initial: TimedMessageView | null; s: TimedMessagesState; onClose: () => void; onSaved: () => void }) {
   const [d, setD] = useState<Draft>(draftOf(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<string | null>(null);
@@ -233,8 +235,13 @@ function TimedEditor({ initial, onClose, onSaved }: { initial: TimedMessageView 
         </div>
       </div>
 
-      {d.platform === 'discord' && (
+      {d.platform === 'discord' ? (
         <DiscordChannelPicker channels={channels} guildId={d.guildId} channelId={d.channelId} needs={['viewChannel', 'sendMessages', ...(d.useEmbed ? (['embedLinks'] as const) : [])]} onChange={(guildId, channelId) => set({ guildId, channelId })} error={err('channelId') ?? err('guildId')} />
+      ) : (
+        <p className="small muted">
+          Posts in {s[d.platform].channel ? `${s[d.platform].channel}’s` : 'your'} {CHAT_NAME[d.platform]} chat as the chatbot account. {CHAT_NAME[d.platform]} chat shows
+          text only (no embeds).
+        </p>
       )}
 
       <label className="field">
@@ -276,6 +283,10 @@ function TimedEditor({ initial, onClose, onSaved }: { initial: TimedMessageView 
             </select>
           </div>
         )}
+        <p className="muted small">
+          {d.useTime || d.useCount ? `Posts ${describeSchedule({ intervalMinutes: d.useTime ? d.intervalMinutes : null, messageCount: d.useCount ? d.messageCount : null, combine: d.combine })}. ` : ''}
+          Each post restarts both counts, so it never posts twice for one moment; at most one post a minute. The clock starts when it’s switched on (nothing is posted right away). Message counts are saved, so they carry on after CONDUIT restarts; switching it on or off or changing its settings starts the count again.
+        </p>
         {err('intervalMinutes') && <span className="field-error">{err('intervalMinutes')}</span>}
         {err('messageCount') && <span className="field-error">{err('messageCount')}</span>}
       </fieldset>

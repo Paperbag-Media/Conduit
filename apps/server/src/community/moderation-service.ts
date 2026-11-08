@@ -1,19 +1,15 @@
 /**
- * Moderation: manual actions on Discord and Kick, the history of actions taken through CONDUIT, and automated
- * protection for Kick chat.
+ * Moderation: actions on Discord, Kick and Twitch, the history of actions taken through CONDUIT, and automated protection
+ * for Kick and Twitch chat (chat-protection.ts).
  *
  * Every action uses the connected account's own platform permissions and the platform's official API:
  * - Discord, with the bot token. What the bot may do is read from its roles in each server (Discord's permission
  *   algorithm, server level); Discord still has the final say (role hierarchy, channel overwrites), and its refusal is
  *   reported as a failure.
  * - Kick, with the main account's token (the channel owner), scopes moderation:ban and moderation:chat_message:manage.
+ * - Twitch, with the main account's token (the channel owner), which also changes its chat modes and Shield Mode.
  * Nothing is reported as done until the platform confirms it. Each attempt (success or failure) is recorded in
  * moderation_actions; validation errors, disconnected platforms and missing permissions stop before anything is sent.
- *
- * Automated protection (Kick only): blocked words/phrases, repeated messages and message flooding, each with its own
- * action (log only, delete the message, or time out). It's off by default and every rule starts as "log only". Each
- * chat event is checked once (by message id), the channel owner, the chatbot account, moderators (optional) and
- * CONDUIT's own messages are never acted on, and actions run one at a time through a bounded queue.
  */
 import crypto from 'node:crypto';
 import {
@@ -25,6 +21,7 @@ import {
   moderationRepo,
   SETTING_KEYS,
   settingsRepo,
+  twitchChattersRepo,
   type Database,
   type DiscordLogEntryRecord,
   type DiscordModerationEventRecord,
@@ -35,10 +32,13 @@ import type { Logger } from '@conduit/logger';
 import {
   AUTOMOD_ACTIONS,
   AUTOMOD_DEFAULTS,
-  automodMatcher,
-  automodSettingsSchema,
-  disallowedLinks,
-  kickTextCheck,
+  TWITCH_AUTOMOD_DEFAULTS,
+  TWITCH_BAN_SCOPE,
+  TWITCH_CHAT_MODES_SCOPE,
+  TWITCH_DELETE_SCOPE,
+  TWITCH_MODERATORS_SCOPE,
+  TWITCH_SHIELD_SCOPE,
+  twitchChatModesSchema,
   userHistorySchema,
   DISCORD_PERMISSION_BITS,
   MODERATION_ACTIONS,
@@ -47,9 +47,7 @@ import {
   parseDiscordMessageLink,
   parseDiscordUser,
   type AutomodAction,
-  type AutomodMatcher,
   type AutomodRecordRule,
-  type AutomodRule,
   type AutomodSettings,
   type AutomodState,
   type ModerationAction,
@@ -62,7 +60,8 @@ import {
   type KickModerationState,
   type LoyaltyLogEntry,
   type ModerationUserHistory,
-  type RaidState,
+  type TwitchChatModesState,
+  type TwitchModerationState,
   type DiscordServerModerationView,
   type DiscordLogEntryView,
   type ProtectionEventView,
@@ -73,52 +72,25 @@ import { DiscordApiError, type DiscordApi, type GuildRole } from '../discord/dis
 import type { GuildEvent } from '../discord/discord-bot';
 import type { DiscordCredentials } from '../discord/discord-credentials';
 import { KickApiError } from '../kick/kick-chat-api';
+import { TwitchChatApiError } from '../twitch/twitch-chat-api';
+import type { TwitchBanEvent, TwitchChatService } from '../twitch/twitch-chat-service';
 import { parseInput } from '../validation';
 import { channelPermissions } from '../discord/discord-giveaways';
-import type { KickBanEvent, KickChatMessage, KickChatService } from '../kick/kick-chat-service';
+import type { KickBanEvent, KickChatService } from '../kick/kick-chat-service';
+import { ChatProtection, type ProtectedMessage, type ProtectionAction } from './chat-protection';
 
 const { KICK_MEMBERS, BAN_MEMBERS, MANAGE_MESSAGES, MODERATE_MEMBERS } = DISCORD_PERMISSION_BITS;
 const GUILD_CACHE_MS = 60_000;
 const HISTORY_LIMIT = 100;
 /** Discord Logging entries shown in the Moderation log (messages and members are busier than moderation). */
 const LOG_ENTRY_LIMIT = 200;
-/** Message ids remembered so a re-delivered chat event is checked once. */
+/** Ban event ids remembered so a re-delivered one is recorded once. */
 const SEEN_LIMIT = 2000;
-/** Users tracked for repeat/flood detection at once (oldest forgotten first). */
-const TRACKED_USERS = 5000;
-/** At most this many automated actions wait at once; beyond that, new ones are logged and skipped. */
-const MAX_PENDING_ACTIONS = 20;
-/** The same rule doesn't act on (or log) the same user again within this window. */
-const RULE_COOLDOWN_MS = 30_000;
-/** A ban Kick reports within this long after CONDUIT's own ban or timeout of that user is CONDUIT's echo. */
+/** At most this many Kick moderators are remembered (oldest first out). */
+const KICK_MODERATORS_MAX = 500;
+/** A ban Kick or Twitch reports within this long after CONDUIT's own ban or timeout of that user is CONDUIT's echo. */
 const ECHO_WINDOW_MS = 2 * 60_000;
 const USER_HISTORY_LIMIT = 300;
-/** When CONDUIT started remembering who chats on Kick (raid mode learns the regulars first). */
-const CHATTERS_SINCE_KEY = 'kick.chatters.since';
-/** Raid mode starts working once CONDUIT has seen chat this long, and this many different chatters. */
-const RAID_LEARNING_MS = 2 * 60 * 60_000;
-const RAID_LEARNING_CHATTERS = 25;
-
-/** What a check (or raid mode) matched, and what to do. */
-interface KickMatch {
-  rule: AutomodRecordRule;
-  action: AutomodAction;
-  timeoutMinutes: number;
-  detail: string;
-}
-
-/** The settings key of each check. */
-const RULE_KEY = {
-  blocked_terms: 'blockedTerms',
-  links: 'links',
-  caps: 'caps',
-  emotes: 'emotes',
-  symbols: 'symbols',
-  long_message: 'longMessage',
-  repeat: 'repeat',
-  spam: 'spam',
-} as const satisfies Record<AutomodRule, keyof AutomodSettings>;
-const KICK_CHECK_KEYS = Object.values(RULE_KEY);
 
 export const KICK_SCOPES = { ban: 'moderation:ban', chat: 'moderation:chat_message:manage' } as const;
 
@@ -153,6 +125,27 @@ export interface ModerationServiceOptions {
     | 'chatbotIdentity'
     | 'wasRecentlySent'
   >;
+  twitch: Pick<
+    TwitchChatService,
+    | 'moderator'
+    | 'moderationBan'
+    | 'moderationUnban'
+    | 'moderationDeleteMessage'
+    | 'isModerator'
+    | 'chatModes'
+    | 'updateChatModes'
+    | 'shieldMode'
+    | 'setShieldMode'
+    | 'onMessage'
+    | 'onBan'
+    | 'banEvents'
+    | 'sendResult'
+    | 'state'
+    | 'chatbotIdentity'
+    | 'wasRecentlySent'
+  >;
+  /** A Twitch login's user id (null: no such user). */
+  twitchUserId: (login: string) => Promise<string | null>;
 }
 
 interface GuildAccess {
@@ -164,26 +157,25 @@ interface GuildAccess {
 
 const ok = (): ModerationCapability => ({ available: true, problem: null });
 const no = (problem: string): ModerationCapability => ({ available: false, problem });
+const TWITCH_RECONNECT = 'Reconnect your main Twitch account (Dashboard → Twitch).';
+
+/** What automated protection can do, from a platform's capabilities (logging always works). */
+function protectionActions(caps: Record<ModerationActionKind | 'lookup', ModerationCapability>): Record<AutomodAction, ModerationCapability> {
+  const out = {} as Record<AutomodAction, ModerationCapability>;
+  for (const action of AUTOMOD_ACTIONS) out[action] = action === 'log' ? ok() : caps[action];
+  return out;
+}
 
 export class ModerationService {
   private guildCache: { at: number; guilds: GuildAccess[]; problem: string | null } | null = null;
-  private readonly seen = new Set<string>();
-  private readonly recentByUser = new Map<string, number[]>();
-  private readonly repeatsByUser = new Map<string, { text: string; times: number[] }>();
-  private readonly lastActed = new Map<string, number>();
-  private queue: Promise<void> = Promise.resolve();
-  private pending = 0;
-  private stats = { checked: 0, matched: 0, since: '' };
-  private termMatcher: { key: string; matcher: AutomodMatcher } = { key: '', matcher: automodMatcher({ keywords: [], regexPatterns: [], allowList: [] }) };
-  private unsubscribe: (() => void) | null = null;
-  private unsubscribeBans: (() => void) | null = null;
+  private unsubscribers: Array<() => void> = [];
   private readonly seenBans = new Set<string>();
-  /** Raid mode is on until then (ms; 0: off). */
-  private raidUntil = 0;
-  /** When recent first-time chatters were first seen (raid detection). */
-  private firstTimers: number[] = [];
-  /** First-time chatters who count as newcomers during raid mode, and when they were first seen. */
-  private readonly raidNewcomers = new Map<string, number>();
+  /** Kick moderators known from their chat badges (loaded from the settings on first use). */
+  private kickModerators: Set<string> | null = null;
+  /** Twitch users CONDUIT is acting on right now (its own ban's event can arrive before Twitch's answer). */
+  private readonly actingOnTwitch = new Set<string>();
+  private readonly kickProtection: ChatProtection;
+  private readonly twitchProtection: ChatProtection;
   private readonly actionListeners = new Set<(r: ModerationRecordView) => void>();
 
   /** Every recorded moderation action (after it is saved): Discord commands, automated protection. */
@@ -193,26 +185,68 @@ export class ModerationService {
   }
 
   constructor(private readonly o: ModerationServiceOptions) {
-    this.stats.since = o.now().toISOString();
+    const shared = { db: o.db, now: o.now, logger: o.logger, record: (r: ModerationRecord) => this.save(r) };
+    const placeOf = (me: { userId: string; name: string; channel: string } | null) => (me ? { id: me.userId, name: me.channel, account: me.name } : null);
+    this.kickProtection = new ChatProtection({
+      ...shared,
+      target: {
+        platform: 'kick',
+        label: 'Kick',
+        settingKey: SETTING_KEYS.automodSettings,
+        chattersSinceKey: 'kick.chatters.since',
+        chatters: kickChattersRepo,
+        defaults: AUTOMOD_DEFAULTS,
+        moderatorBadges: ['moderator', 'broadcaster'],
+        chatbotUserId: () => o.kick.chatbotIdentity().userId,
+        wasRecentlySent: (text) => o.kick.wasRecentlySent(text),
+        place: () => placeOf(o.kick.moderator()),
+        actions: () => protectionActions(this.kickCapabilities()),
+        act: (m, a) => this.protectKick(m, a),
+        announce: (text) => o.kick.sendResult(text),
+      },
+    });
+    this.twitchProtection = new ChatProtection({
+      ...shared,
+      target: {
+        platform: 'twitch',
+        label: 'Twitch',
+        settingKey: SETTING_KEYS.twitchAutomodSettings,
+        chattersSinceKey: 'twitch.chatters.since',
+        chatters: twitchChattersRepo,
+        defaults: TWITCH_AUTOMOD_DEFAULTS,
+        moderatorBadges: ['moderator', 'lead_moderator', 'broadcaster'],
+        chatbotUserId: () => o.twitch.chatbotIdentity().userId,
+        wasRecentlySent: (text) => o.twitch.wasRecentlySent(text),
+        place: () => placeOf(o.twitch.moderator()),
+        actions: () => protectionActions(this.twitchCapabilities()),
+        act: (m, a) => this.protectTwitch(m, a),
+        announce: (text) => o.twitch.sendResult(text),
+      },
+    });
   }
 
-  /** Starts automated protection (listens to Kick chat). */
+  /** Starts automated protection (listens to Kick and Twitch chat). */
   start(): void {
-    if (this.unsubscribe) return;
-    this.unsubscribe = this.o.kick.onMessage((m) => this.onKickMessage(m));
-    this.unsubscribeBans = this.o.kick.onBan((b) => this.onKickBan(b));
+    if (this.unsubscribers.length > 0) return;
+    this.unsubscribers = [
+      this.o.kick.onMessage((m) => {
+        this.noteKickModerator(m);
+        this.kickProtection.onMessage(m);
+      }),
+      this.o.kick.onBan((b) => this.onKickBan(b)),
+      this.o.twitch.onMessage((m) => this.twitchProtection.onMessage(m)),
+      this.o.twitch.onBan((b) => this.onTwitchBan(b)),
+    ];
   }
 
   stop(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
-    this.unsubscribeBans?.();
-    this.unsubscribeBans = null;
+    for (const unsubscribe of this.unsubscribers) unsubscribe();
+    this.unsubscribers = [];
   }
 
   /** Waits for queued automated actions (tests). */
-  idle(): Promise<void> {
-    return this.queue;
+  async idle(): Promise<void> {
+    await Promise.all([this.kickProtection.idle(), this.twitchProtection.idle()]);
   }
 
   // ── state ──────────────────────────────────────────────────────────────────
@@ -229,6 +263,22 @@ export class ModerationService {
       chat: { status: chat.receive.status, problem: chat.receive.problem },
       automod: this.automodState(),
       history: moderationRepo.list(this.o.db, HISTORY_LIMIT, 'kick').map(toView),
+    };
+  }
+
+  /** The Twitch Moderation page: automated protection and Twitch logs. */
+  twitchState(): TwitchModerationState {
+    const me = this.o.twitch.moderator();
+    const chat = this.o.twitch.state();
+    return {
+      connected: me !== null,
+      problem: me ? null : 'Connect your main Twitch account (Dashboard → Twitch) to protect Twitch chat.',
+      accountName: me?.name ?? null,
+      channel: me?.channel ?? null,
+      chat: { status: chat.receive.status, problem: chat.receive.problem },
+      protection: this.twitchProtection.state(),
+      moderationEvents: this.o.twitch.banEvents(),
+      history: moderationRepo.list(this.o.db, HISTORY_LIMIT, 'twitch').map(toView),
     };
   }
 
@@ -362,6 +412,25 @@ export class ModerationService {
     return out;
   }
 
+  private twitchCapabilities(): Record<ModerationActionKind | 'lookup', ModerationCapability> {
+    const me = this.o.twitch.moderator();
+    const out = {} as Record<ModerationActionKind | 'lookup', ModerationCapability>;
+    if (!me) {
+      const missing = no('Connect your main Twitch account first.');
+      for (const a of [...MODERATION_ACTIONS, 'lookup'] as const) out[a] = missing;
+      return out;
+    }
+    const needs = (scope: string) => (me.scopes.includes(scope) ? ok() : no(TWITCH_RECONNECT));
+    const ban = needs(TWITCH_BAN_SCOPE);
+    out.timeout = ban;
+    out.ban = ban;
+    out.unban = ban;
+    out.untimeout = no('Twitch has no separate “remove timeout”: use Unban, which also ends a timeout.');
+    out.delete_message = needs(TWITCH_DELETE_SCOPE);
+    out.lookup = no('Twitch users are looked up by chat commands only.');
+    return out;
+  }
+
   // ── lookup ─────────────────────────────────────────────────────────────────
 
   async lookup(raw: unknown): Promise<ModerationLookupResult> {
@@ -411,6 +480,7 @@ export class ModerationService {
   /** Performs one action. Resolves with the platform's outcome (recorded either way); throws before sending if it can't be attempted. */
   async act(raw: unknown): Promise<ModerationResult> {
     const a = parseInput(moderationActionSchema, raw);
+    if (a.platform === 'twitch') return this.actTwitch(a, 'manual', null);
     return a.platform === 'discord' ? this.actDiscord(a) : this.actKick(a, 'manual', null);
   }
 
@@ -523,6 +593,76 @@ export class ModerationService {
       return this.finish(base, false, describeKick(err, a.action));
     }
     return this.finish(base, true, successText('kick', a.action, a.username, me.channel, base.durationSeconds));
+  }
+
+  private async actTwitch(
+    a: Extract<ModerationAction, { platform: 'twitch' }>,
+    source: 'manual' | 'automod',
+    rule: AutomodRecordRule | null,
+    actor?: string,
+  ): Promise<ModerationResult> {
+    const me = this.o.twitch.moderator();
+    if (!me) throw new AppError('not_configured', 'Connect your main Twitch account first (Dashboard → Twitch).');
+    if (a.userId === me.userId) throw invalid('userId', 'You can’t moderate your own channel account.');
+    const cap = this.twitchCapabilities()[a.action];
+    if (!cap.available) throw new AppError('forbidden', cap.problem!);
+    const base = {
+      platform: 'twitch' as const,
+      placeId: me.userId,
+      placeName: me.channel,
+      action: a.action,
+      targetUserId: a.userId,
+      targetName: a.username,
+      messageId: a.action === 'delete_message' ? a.messageId : null,
+      durationSeconds: a.action === 'timeout' ? a.durationSeconds : null,
+      reason: a.reason,
+      source,
+      actor: actor ?? me.name,
+      rule,
+    };
+    this.actingOnTwitch.add(a.userId);
+    try {
+      switch (a.action) {
+        case 'timeout':
+          await this.o.twitch.moderationBan(a.userId, a.durationSeconds, a.reason);
+          break;
+        case 'ban':
+          await this.o.twitch.moderationBan(a.userId, null, a.reason);
+          break;
+        case 'unban':
+          await this.o.twitch.moderationUnban(a.userId);
+          break;
+        case 'delete_message':
+          await this.o.twitch.moderationDeleteMessage(a.messageId);
+          break;
+      }
+    } catch (err) {
+      return this.finish(base, false, describeTwitch(err, a.action));
+    } finally {
+      this.actingOnTwitch.delete(a.userId);
+    }
+    return this.finish(base, true, successText('twitch', a.action, a.username, me.channel, base.durationSeconds));
+  }
+
+  /** What automated protection does on Kick. */
+  private protectKick(m: ProtectedMessage, a: ProtectionAction): Promise<ModerationResult> {
+    const username = /^[A-Za-z0-9_.-]{1,64}$/.test(m.senderUsername) ? m.senderUsername : 'user';
+    const target = { platform: 'kick', userId: m.senderUserId, username, reason: a.reason } as const;
+    return this.actKick(
+      a.action === 'timeout' ? { ...target, action: 'timeout', durationSeconds: a.durationSeconds! } : { ...target, action: 'delete_message', messageId: m.messageId },
+      'automod',
+      a.rule,
+    );
+  }
+
+  /** What automated protection does on Twitch. */
+  private protectTwitch(m: ProtectedMessage, a: ProtectionAction): Promise<ModerationResult> {
+    const target = { platform: 'twitch', userId: m.senderUserId, username: m.senderLogin ?? m.senderUsername, reason: a.reason } as const;
+    return this.actTwitch(
+      a.action === 'timeout' ? { ...target, action: 'timeout', durationSeconds: a.durationSeconds! } : { ...target, action: 'delete_message', messageId: m.messageId },
+      'automod',
+      a.rule,
+    );
   }
 
   private finish(base: Omit<ModerationRecord, 'id' | 'createdAt' | 'outcome' | 'detail'>, success: boolean, message: string, botMessage?: string): ModerationResult {
@@ -675,7 +815,7 @@ export class ModerationService {
    * account like a manual action (recorded in the moderation history as "<moderator> via !command"). The message is
    * short, for chat; a refusal is never reported as done.
    */
-  async runKickCommand(r: { actorName: string; command: string; action: 'timeout' | 'ban' | 'unban'; username: string; durationSeconds?: number; reason: string | null }): Promise<{ ok: boolean; message: string }> {
+  async runKickCommand(r: { actorName: string; actorId: string; command: string; action: 'timeout' | 'ban' | 'unban'; username: string; durationSeconds?: number; reason: string | null }): Promise<{ ok: boolean; message: string }> {
     const me = this.o.kick.moderator();
     if (!me) return { ok: false, message: 'The channel’s Kick account isn’t connected to CONDUIT.' };
     const cap = this.kickCapabilities()[r.action];
@@ -690,6 +830,8 @@ export class ModerationService {
     }
     if (!channel) return { ok: false, message: `There’s no Kick user named ${username}.` };
     if (channel.broadcasterUserId === me.userId) return { ok: false, message: 'The channel owner can’t be moderated.' };
+    // These act as the channel owner, who can reach moderators; so, like on Twitch, only the owner may do that here.
+    if (r.actorId !== me.userId && this.kickModeratorIds().has(channel.broadcasterUserId)) return { ok: false, message: 'Moderators can’t be moderated from chat.' };
     const parsed = moderationActionSchema.safeParse({
       platform: 'kick',
       action: r.action,
@@ -716,6 +858,84 @@ export class ModerationService {
     }
   }
 
+  /** Kick moderators as last seen in chat (a moderator badge on their latest message). */
+  private kickModeratorIds(): Set<string> {
+    if (this.kickModerators) return this.kickModerators;
+    let ids: unknown = [];
+    try {
+      ids = JSON.parse(settingsRepo.get(this.o.db, SETTING_KEYS.kickModerators) ?? '[]');
+    } catch {
+      // Unreadable: start again from what chat shows.
+    }
+    this.kickModerators = new Set(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string').slice(0, KICK_MODERATORS_MAX) : []);
+    return this.kickModerators;
+  }
+
+  /** Keeps the list of Kick moderators up to date from each message's badges; saved only when someone's role changes. */
+  private noteKickModerator(m: { senderUserId: string; badgeTypes: readonly string[] }): void {
+    try {
+      const ids = this.kickModeratorIds();
+      const moderator = m.badgeTypes.includes('moderator');
+      if (moderator === ids.has(m.senderUserId)) return;
+      if (moderator) {
+        ids.add(m.senderUserId);
+        if (ids.size > KICK_MODERATORS_MAX) ids.delete(ids.values().next().value!);
+      } else ids.delete(m.senderUserId);
+      settingsRepo.set(this.o.db, SETTING_KEYS.kickModerators, JSON.stringify([...ids]), this.o.now().toISOString());
+    } catch (err) {
+      this.o.logger.warn('kick moderator list not updated', { err });
+    }
+  }
+
+  /**
+   * A moderator's chat command on Twitch (!timeout, !ban, !unban), like Kick's. It acts as the channel owner, who can
+   * reach moderators; a moderator can't on Twitch, so only the owner may do that here. Refused when that can't be checked.
+   */
+  async runTwitchCommand(r: { actorName: string; actorId: string; command: string; action: 'timeout' | 'ban' | 'unban'; username: string; durationSeconds?: number; reason: string | null }): Promise<{ ok: boolean; message: string }> {
+    const me = this.o.twitch.moderator();
+    if (!me) return { ok: false, message: 'The channel’s Twitch account isn’t connected to CONDUIT.' };
+    if (!this.twitchCapabilities()[r.action].available || !me.scopes.includes(TWITCH_MODERATORS_SCOPE)) {
+      return { ok: false, message: 'I can’t do that yet: reconnect the main Twitch account in CONDUIT (Dashboard → Twitch).' };
+    }
+    const login = r.username.replace(/^@+/, '').toLowerCase();
+    if (!/^[a-z0-9_]{1,25}$/.test(login)) return { ok: false, message: 'That isn’t a Twitch username.' };
+    let userId: string | null;
+    let moderator: boolean;
+    try {
+      userId = await this.o.twitchUserId(login);
+      moderator = userId !== null && r.actorId !== me.userId && (await this.o.twitch.isModerator(userId));
+    } catch {
+      return { ok: false, message: 'I couldn’t look that user up on Twitch right now. Try again in a moment.' };
+    }
+    if (!userId) return { ok: false, message: `There’s no Twitch user named ${login}.` };
+    if (userId === me.userId) return { ok: false, message: 'The channel owner can’t be moderated.' };
+    if (moderator) return { ok: false, message: 'Moderators can’t be moderated from chat.' };
+    const parsed = moderationActionSchema.safeParse({
+      platform: 'twitch',
+      action: r.action,
+      userId,
+      username: login,
+      ...(r.action === 'timeout' ? { durationSeconds: r.durationSeconds } : {}),
+      reason: r.reason ?? '',
+    });
+    if (!parsed.success) return { ok: false, message: parsed.error.issues[0]?.message ?? 'Those options aren’t valid.' };
+    try {
+      const result = await this.actTwitch(parsed.data as Extract<ModerationAction, { platform: 'twitch' }>, 'manual', null, `${r.actorName.slice(0, 60)} via ${r.command}`);
+      if (!result.ok) return { ok: false, message: `Twitch didn’t ${r.action === 'timeout' ? 'time out' : r.action} ${login}.` };
+      const minutes = Math.round((r.durationSeconds ?? 0) / 60);
+      const done =
+        r.action === 'timeout'
+          ? `${login} is timed out for ${minutes} minute${minutes === 1 ? '' : 's'}.`
+          : r.action === 'ban'
+            ? `${login} is banned.`
+            : `${login} is unbanned.`;
+      return { ok: true, message: done };
+    } catch (err) {
+      if (err instanceof AppError) return { ok: false, message: err.message };
+      throw err;
+    }
+  }
+
   /** Discord's rule for moderating members, applied to the member who ran the command (the owner may act on anyone). */
   private async hierarchyRefusal(g: ResolvedGuild, invokerId: string, targetId: string): Promise<string | null> {
     const [ownerId, invoker, target] = await Promise.all([
@@ -733,133 +953,85 @@ export class ModerationService {
     return null;
   }
 
-  // ── automated protection (Kick) ────────────────────────────────────────────
+  // ── automated protection ───────────────────────────────────────────────────
 
   automodSettings(): AutomodSettings {
-    const raw = settingsRepo.get(this.o.db, SETTING_KEYS.automodSettings);
-    if (!raw) return structuredClone(AUTOMOD_DEFAULTS);
-    try {
-      const parsed = automodSettingsSchema.safeParse(JSON.parse(raw));
-      return parsed.success ? parsed.data : structuredClone(AUTOMOD_DEFAULTS);
-    } catch {
-      return structuredClone(AUTOMOD_DEFAULTS);
-    }
+    return this.kickProtection.settings();
   }
 
   private automodState(): AutomodState {
-    const caps = this.kickCapabilities();
-    const kickActions = {} as Record<AutomodAction, ModerationCapability>;
-    for (const action of AUTOMOD_ACTIONS) kickActions[action] = action === 'log' ? ok() : caps[action];
+    const { settings, actions, raid, stats } = this.kickProtection.state();
     return {
-      kick: this.automodSettings(),
-      kickActions,
-      raid: this.raidState(),
+      kick: settings,
+      kickActions: actions,
+      raid,
       kickModerationEvents: this.o.kick.banEvents(),
       discord: {
         supported: false,
         reason: 'Discord protection is on Discord Bot → Protection: CONDUIT’s own AutoMod rules and message checks.',
       },
-      stats: { ...this.stats },
+      stats,
     };
   }
 
   /** Saves the Kick settings. An action the main account can't perform is refused, with the reason. */
   saveAutomod(raw: unknown): AutomodState {
-    const settings = parseInput(automodSettingsSchema, raw);
-    const caps = this.automodState().kickActions;
-    const issues: Array<{ path: string; message: string }> = [];
-    for (const rule of KICK_CHECK_KEYS) {
-      const r = settings[rule];
-      if (settings.enabled && r.enabled && !caps[r.action].available) issues.push({ path: `${rule}.action`, message: caps[r.action].problem! });
-    }
-    if (settings.enabled && settings.raid.enabled && !caps[settings.raid.action].available) issues.push({ path: 'raid.action', message: caps[settings.raid.action].problem! });
-    if (issues.length > 0) throw new AppError('validation_error', 'Some actions aren’t available on Kick', { issues });
-    settingsRepo.set(this.o.db, SETTING_KEYS.automodSettings, JSON.stringify(settings), this.o.now().toISOString());
-    if (!settings.enabled || !settings.raid.enabled) this.raidUntil = 0;
-    writeAudit(
-      this.o.db,
-      {
-        action: 'moderation.automod_updated',
-        outcome: 'success',
-        actorUserId: null,
-        metadata: {
-          enabled: settings.enabled,
-          ...Object.fromEntries(KICK_CHECK_KEYS.map((k) => [k, settings[k].enabled ? settings[k].action : 'off'])),
-          raid: settings.raid.enabled ? settings.raid.action : 'off',
-          terms: settings.blockedTerms.terms.length,
-        },
-      },
-      this.o.now(),
-    );
-    this.o.logger.info('automod settings saved', { enabled: settings.enabled });
+    this.kickProtection.save(raw);
     return this.automodState();
   }
 
-  // ── raid mode ──────────────────────────────────────────────────────────────
-
-  /** Raid mode can start once CONDUIT knows enough of your chat (so regulars aren't taken for raiders). */
-  private learning(): boolean {
-    const since = Date.parse(settingsRepo.get(this.o.db, CHATTERS_SINCE_KEY) ?? '');
-    return !Number.isFinite(since) || this.o.now().getTime() - since < RAID_LEARNING_MS || kickChattersRepo.count(this.o.db) < RAID_LEARNING_CHATTERS;
-  }
-
-  private raidState(): RaidState {
-    const now = this.o.now().getTime();
-    return { activeUntil: this.raidUntil > now ? new Date(this.raidUntil).toISOString() : null, learning: this.learning(), knownChatters: kickChattersRepo.count(this.o.db) };
-  }
-
-  /** Starts raid mode now (or ends it) from the dashboard. */
+  /** Starts Kick's raid mode now (or ends it) from the dashboard. */
   setRaid(active: boolean): AutomodState {
-    const s = this.automodSettings();
-    if (active) {
-      if (!s.enabled || !s.raid.enabled) throw new AppError('conflict', 'Switch on Automated Protection and Raid mode first.');
-      this.startRaid(s, 'started from the dashboard');
-    } else {
-      this.raidUntil = 0;
-      this.raidNewcomers.clear();
-      this.o.logger.info('raid mode ended from the dashboard');
-    }
+    this.kickProtection.setRaid(active);
     return this.automodState();
   }
 
-  private startRaid(s: AutomodSettings, why: string): void {
-    const now = this.o.now().getTime();
-    const wasOn = this.raidUntil > now;
-    this.raidUntil = now + s.raid.durationMinutes * 60_000;
-    this.o.logger.info('raid mode on', { why, minutes: s.raid.durationMinutes });
-    if (!wasOn && s.raid.announcement) void this.o.kick.sendResult(s.raid.announcement).catch(() => undefined);
+  saveTwitchAutomod(raw: unknown): TwitchModerationState {
+    this.twitchProtection.save(raw);
+    return this.twitchState();
   }
 
-  /**
-   * Remembers who chats. A first-time chatter (once CONDUIT knows the chat) counts toward a raid, and while raid mode
-   * is on (or the raid is still recent) counts as a newcomer.
-   */
-  private noteChatter(m: KickChatMessage, s: AutomodSettings): void {
-    const now = this.o.now();
-    if (!settingsRepo.get(this.o.db, CHATTERS_SINCE_KEY)) settingsRepo.set(this.o.db, CHATTERS_SINCE_KEY, now.toISOString(), now.toISOString());
-    const learning = this.learning();
-    const first = kickChattersRepo.seen(this.o.db, m.senderUserId, m.senderUsername, now.toISOString());
-    if (!first || learning || !s.enabled || !s.raid.enabled) return;
-    const ms = now.getTime();
-    this.track(this.raidNewcomers, m.senderUserId, ms);
-    this.firstTimers = this.firstTimers.filter((t) => ms - t < s.raid.windowSeconds * 1000);
-    this.firstTimers.push(ms);
-    if (this.firstTimers.length >= s.raid.newChatters) {
-      this.firstTimers = [];
-      this.startRaid(s, `${s.raid.newChatters} first-time chatters within ${s.raid.windowSeconds} s`);
+  setTwitchRaid(active: boolean): TwitchModerationState {
+    this.twitchProtection.setRaid(active);
+    return this.twitchState();
+  }
+
+  // ── Twitch's chat modes and Shield Mode ────────────────────────────────────
+
+  /** What Twitch says now, or why it can't be read or changed. Asks Twitch, so the page loads it once, not on every poll. */
+  async twitchChatModes(): Promise<TwitchChatModesState> {
+    const me = this.o.twitch.moderator();
+    if (!me) return { modes: null, shieldMode: null, problem: 'Connect your main Twitch account first.' };
+    if (!me.scopes.includes(TWITCH_CHAT_MODES_SCOPE) || !me.scopes.includes(TWITCH_SHIELD_SCOPE)) return { modes: null, shieldMode: null, problem: TWITCH_RECONNECT };
+    try {
+      const [modes, shieldMode] = await Promise.all([this.o.twitch.chatModes(), this.o.twitch.shieldMode()]);
+      return { modes, shieldMode, problem: null };
+    } catch (err) {
+      return { modes: null, shieldMode: null, problem: describeTwitch(err) };
     }
   }
 
-  /** During raid mode: a newcomer whose message has a link, or that a check matched (even a log-only one), is acted on. */
-  private raidMatch(m: KickChatMessage, s: AutomodSettings, match: KickMatch | null): KickMatch | null {
-    const now = this.o.now().getTime();
-    if (!s.raid.enabled || this.raidUntil <= now) return null;
-    const since = this.raidNewcomers.get(m.senderUserId);
-    if (since === undefined || now - since > s.raid.durationMinutes * 60_000) return null;
-    const link = disallowedLinks(m.content, s.links.allowedSites)[0];
-    if (!match && !link) return null;
-    const why = match ? match.detail : `Posted a link (${link!.slice(0, 60)}).`;
-    return { rule: 'raid', action: s.raid.action, timeoutMinutes: s.raid.timeoutMinutes, detail: `First-time chatter during raid mode. ${why}` };
+  async saveTwitchChatModes(raw: unknown): Promise<TwitchChatModesState> {
+    const modes = parseInput(twitchChatModesSchema, raw);
+    await this.changeTwitchChat(TWITCH_CHAT_MODES_SCOPE, () => this.o.twitch.updateChatModes(modes));
+    return this.twitchChatModes();
+  }
+
+  async setTwitchShieldMode(active: boolean): Promise<TwitchChatModesState> {
+    await this.changeTwitchChat(TWITCH_SHIELD_SCOPE, () => this.o.twitch.setShieldMode(active));
+    return this.twitchChatModes();
+  }
+
+  private async changeTwitchChat(scope: string, change: () => Promise<unknown>): Promise<void> {
+    const me = this.o.twitch.moderator();
+    if (!me) throw new AppError('not_configured', 'Connect your main Twitch account first (Dashboard → Twitch).');
+    if (!me.scopes.includes(scope)) throw new AppError('forbidden', TWITCH_RECONNECT);
+    try {
+      await change();
+    } catch (err) {
+      throw new AppError('service_unavailable', describeTwitch(err));
+    }
+    writeAudit(this.o.db, { action: 'moderation.twitch_chat_updated', outcome: 'success', actorUserId: null, metadata: { scope } }, this.o.now());
   }
 
   // ── moderation done on Kick itself ─────────────────────────────────────────
@@ -901,13 +1073,48 @@ export class ModerationService {
     }
   }
 
+  /**
+   * A ban, timeout or unban from Twitch's channel.ban and channel.unban: recorded for the Logs as done on Twitch, unless
+   * it's the echo of one CONDUIT just did itself (already recorded, with what triggered it).
+   */
+  private onTwitchBan(b: TwitchBanEvent): void {
+    try {
+      if (this.actingOnTwitch.has(b.userId)) return;
+      const since = new Date(this.o.now().getTime() - ECHO_WINDOW_MS).toISOString();
+      if (moderationRepo.conduitActedSince(this.o.db, 'twitch', b.userId, b.kind === 'unban' ? ['unban'] : ['ban', 'timeout'], since)) return;
+      const me = this.o.twitch.moderator();
+      const seconds = b.expiresAt ? Math.round((Date.parse(b.expiresAt) - Date.parse(b.at)) / 1000) : null;
+      const timeout = b.kind === 'ban' && seconds !== null && seconds > 0;
+      this.save({
+        id: crypto.randomUUID(),
+        createdAt: this.o.now().toISOString(),
+        platform: 'twitch',
+        placeId: me?.userId ?? b.broadcasterUserId,
+        placeName: me?.channel ?? null,
+        action: b.kind === 'unban' ? 'unban' : timeout ? 'timeout' : 'ban',
+        targetUserId: b.userId,
+        targetName: b.userName,
+        messageId: null,
+        durationSeconds: timeout ? Math.min(seconds, 2_419_200) : null,
+        reason: b.reason,
+        source: 'platform',
+        actor: b.moderatorName,
+        rule: null,
+        outcome: 'success',
+        detail: null,
+      });
+    } catch (err) {
+      this.o.logger.error('twitch ban event not recorded', { err });
+    }
+  }
+
   // ── one user's history ─────────────────────────────────────────────────────
 
-  /** Everything recorded for one person on one platform (Kick: protection and moderation; Discord: the whole log). */
+  /** Everything recorded for one person on one platform (Kick and Twitch: protection and moderation; Discord: the whole log). */
   async userHistory(raw: unknown): Promise<ModerationUserHistory> {
     const { platform, userId } = parseInput(userHistorySchema, raw);
     const history = moderationRepo.listForUser(this.o.db, platform, userId, USER_HISTORY_LIMIT).map(toView);
-    if (platform === 'kick') return { platform, userId, history, serverHistory: [], protectionHistory: [], loggingHistory: [] };
+    if (platform !== 'discord') return { platform, userId, history, serverHistory: [], protectionHistory: [], loggingHistory: [] };
     const discord = await this.discordState();
     const names = new Map(discord.guilds.map((g) => [g.id, g.name]));
     return {
@@ -918,154 +1125,6 @@ export class ModerationService {
       protectionHistory: discordProtectionEventsRepo.listForUser(this.o.db, userId, USER_HISTORY_LIMIT).map((r) => protectionView(r, names)),
       loggingHistory: discordLogEntriesRepo.listForUser(this.o.db, userId, USER_HISTORY_LIMIT).map((r) => loggingView(r, names)),
     };
-  }
-
-  // ── checking messages ──────────────────────────────────────────────────────
-
-  /** A signed chat event from the main channel. Checked once; never throws. */
-  private onKickMessage(m: KickChatMessage): void {
-    try {
-      if (this.seen.has(m.messageId)) return;
-      this.seen.add(m.messageId);
-      if (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.values().next().value!);
-      // Never: the channel owner, the chatbot account, CONDUIT's own messages.
-      if (m.senderUserId === m.broadcasterUserId) return;
-      if (m.senderUserId === this.o.kick.chatbotIdentity().userId) return;
-      if (this.o.kick.wasRecentlySent(m.content)) return;
-      const settings = this.automodSettings();
-      // Everyone else is remembered (raid mode learns the regulars), also while protection is off.
-      this.noteChatter(m, settings);
-      if (!settings.enabled) return;
-      // Not checked: (optionally) moderators, and ignored users.
-      if (settings.exemptModerators && m.badgeTypes.some((b) => b === 'moderator' || b === 'broadcaster')) return;
-      if (settings.ignoredUsers.includes(m.senderUsername.toLowerCase())) return;
-      this.stats.checked++;
-      const checked = this.check(m, settings);
-      const match = this.raidMatch(m, settings, checked) ?? checked;
-      if (!match) return;
-      this.stats.matched++;
-      const key = `${match.rule}:${m.senderUserId}`;
-      const nowMs = this.o.now().getTime();
-      // Delete-message acts on every matching message; logging and timeouts once per user per rule per window.
-      if (match.action !== 'delete_message') {
-        if (nowMs - (this.lastActed.get(key) ?? 0) < RULE_COOLDOWN_MS) return;
-        this.lastActed.set(key, nowMs);
-        if (this.lastActed.size > TRACKED_USERS) this.lastActed.delete(this.lastActed.keys().next().value!);
-      }
-      this.enqueue(m, match);
-    } catch (err) {
-      this.o.logger.error('automod check failed', { err });
-    }
-  }
-
-  private check(m: KickChatMessage, s: AutomodSettings): KickMatch | null {
-    const nowMs = this.o.now().getTime();
-    const text = normalize(m.content);
-    const b = s.blockedTerms;
-    if (b.enabled && (b.terms.length > 0 || b.regexPatterns.length > 0)) {
-      const found = this.matcher(s).match(m.content);
-      if (found) return { rule: 'blocked_terms', action: b.action, timeoutMinutes: b.timeoutMinutes, detail: `Matched a blocked word or phrase (“${found.slice(0, 60)}”).` };
-    }
-    const textMatch = kickTextCheck(m.content, s);
-    if (textMatch) {
-      const r = s[RULE_KEY[textMatch.rule]];
-      return { rule: textMatch.rule, action: r.action, timeoutMinutes: r.timeoutMinutes, detail: textMatch.detail };
-    }
-    // Flooding: more than maxMessages within the window.
-    const times = (this.recentByUser.get(m.senderUserId) ?? []).filter((t) => nowMs - t < s.spam.windowSeconds * 1000);
-    times.push(nowMs);
-    this.track(this.recentByUser, m.senderUserId, times);
-    if (s.spam.enabled && times.length > s.spam.maxMessages) {
-      this.recentByUser.delete(m.senderUserId); // start counting again
-      return { rule: 'spam', action: s.spam.action, timeoutMinutes: s.spam.timeoutMinutes, detail: `More than ${s.spam.maxMessages} messages in ${s.spam.windowSeconds} seconds.` };
-    }
-    // Repeats: the same text `count` times within the window.
-    const prev = this.repeatsByUser.get(m.senderUserId);
-    const repeat = prev && prev.text === text ? prev.times.filter((t) => nowMs - t < s.repeat.windowSeconds * 1000) : [];
-    repeat.push(nowMs);
-    this.track(this.repeatsByUser, m.senderUserId, { text, times: repeat });
-    if (s.repeat.enabled && text.length > 0 && repeat.length >= s.repeat.count) {
-      this.repeatsByUser.delete(m.senderUserId);
-      return { rule: 'repeat', action: s.repeat.action, timeoutMinutes: s.repeat.timeoutMinutes, detail: `The same message ${s.repeat.count} times in ${s.repeat.windowSeconds} seconds.` };
-    }
-    return null;
-  }
-
-  private track<V>(map: Map<string, V>, key: string, value: V): void {
-    map.delete(key);
-    map.set(key, value);
-    if (map.size > TRACKED_USERS) map.delete(map.keys().next().value!);
-  }
-
-  /** The blocked words, patterns and allowed words, compiled once per change (Discord AutoMod's matcher). */
-  private matcher(s: AutomodSettings): AutomodMatcher {
-    const b = s.blockedTerms;
-    const key = JSON.stringify([b.terms, b.regexPatterns, b.allowList]);
-    if (this.termMatcher.key !== key) this.termMatcher = { key, matcher: automodMatcher({ keywords: b.terms, regexPatterns: b.regexPatterns, allowList: b.allowList }) };
-    return this.termMatcher.matcher;
-  }
-
-  private enqueue(m: KickChatMessage, match: KickMatch): void {
-    const me = this.o.kick.moderator();
-    if (match.action === 'log') {
-      this.save({
-        id: crypto.randomUUID(),
-        createdAt: this.o.now().toISOString(),
-        platform: 'kick',
-        placeId: me?.userId ?? m.broadcasterUserId,
-        placeName: me?.channel ?? null,
-        action: 'flag',
-        targetUserId: m.senderUserId,
-        targetName: m.senderUsername,
-        messageId: m.messageId,
-        durationSeconds: null,
-        reason: null,
-        source: 'automod',
-        actor: null,
-        rule: match.rule,
-        outcome: 'logged',
-        detail: match.detail,
-      });
-      return;
-    }
-    if (this.pending >= MAX_PENDING_ACTIONS) {
-      this.o.logger.warn('automod action skipped (busy)', { rule: match.rule });
-      return;
-    }
-    this.pending++;
-    const username = /^[A-Za-z0-9_.-]{1,64}$/.test(m.senderUsername) ? m.senderUsername : 'user';
-    const reason = `Automated: ${match.detail}`.slice(0, 100);
-    this.queue = this.queue.then(async () => {
-      try {
-        const action =
-          match.action === 'timeout'
-            ? ({ platform: 'kick', action: 'timeout', userId: m.senderUserId, username, durationSeconds: match.timeoutMinutes * 60, reason } as const)
-            : ({ platform: 'kick', action: 'delete_message', userId: m.senderUserId, username, messageId: m.messageId, reason } as const);
-        await this.actKick(action, 'automod', match.rule);
-      } catch (err) {
-        // Couldn't be attempted (e.g. the account lost its permission): recorded so it isn't silent.
-        this.save({
-          id: crypto.randomUUID(),
-          createdAt: this.o.now().toISOString(),
-          platform: 'kick',
-          placeId: me?.userId ?? m.broadcasterUserId,
-          placeName: me?.channel ?? null,
-          action: match.action === 'timeout' ? 'timeout' : 'delete_message',
-          targetUserId: m.senderUserId,
-          targetName: m.senderUsername,
-          messageId: m.messageId,
-          durationSeconds: match.action === 'timeout' ? match.timeoutMinutes * 60 : null,
-          reason,
-          source: 'automod',
-          actor: me?.name ?? null,
-          rule: match.rule,
-          outcome: 'failed',
-          detail: err instanceof AppError ? err.message : 'The automated action couldn’t be attempted.',
-        });
-      } finally {
-        this.pending--;
-      }
-    });
   }
 }
 
@@ -1129,10 +1188,6 @@ function invalid(path: string, message: string): AppError {
   return new AppError('validation_error', message, { issues: [{ path, message }] });
 }
 
-function normalize(s: string): string {
-  return s.toLowerCase().normalize('NFKC').replace(/\s+/g, ' ').trim();
-}
-
 function formatDuration(seconds: number): string {
   if (seconds % 86_400 === 0) return `${seconds / 86_400} day${seconds === 86_400 ? '' : 's'}`;
   if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? '' : 's'}`;
@@ -1140,8 +1195,8 @@ function formatDuration(seconds: number): string {
   return `${seconds} seconds`;
 }
 
-function successText(platform: 'discord' | 'kick', action: ModerationActionKind, who: string, place: string, duration: number | null): string {
-  const where = platform === 'discord' ? `in ${place} (Discord)` : `in ${place}’s Kick chat`;
+function successText(platform: 'discord' | 'kick' | 'twitch', action: ModerationActionKind, who: string, place: string, duration: number | null): string {
+  const where = platform === 'discord' ? `in ${place} (Discord)` : `in ${place}’s ${platform === 'kick' ? 'Kick' : 'Twitch'} chat`;
   switch (action) {
     case 'timeout':
       return `${who} is timed out for ${formatDuration(duration ?? 0)} ${where}.`;
@@ -1263,6 +1318,33 @@ function describeKick(err: unknown, action?: ModerationActionKind): string {
         return 'Kick had a problem. Try again in a moment.';
       default:
         return 'Kick returned an unexpected response.';
+    }
+  }
+  return 'The action couldn’t be completed.';
+}
+
+function describeTwitch(err: unknown, action?: ModerationActionKind): string {
+  if (err instanceof TwitchChatApiError) {
+    const said = /HTTP \d+: (.+)\)$/.exec(err.message)?.[1];
+    switch (err.kind) {
+      case 'unauthorized':
+        return 'Twitch rejected the main account’s authorization. Reconnect it (Dashboard → Twitch).';
+      case 'forbidden':
+        return `Twitch refused${said ? `: “${said}”` : ''}. Reconnect your main Twitch account if you connected it before moderation was added.`;
+      case 'not_found':
+        return action === 'delete_message' ? 'Twitch couldn’t find that message (it may already be deleted, or be over 6 hours old).' : `Twitch couldn’t find that${said ? `: “${said}”` : ''}.`;
+      case 'bad_request':
+        return `Twitch rejected the request${said ? `: “${said}”` : ''}.`;
+      case 'conflict':
+        return 'Someone else is acting on that user right now. Try again in a moment.';
+      case 'rate_limited':
+        return `Twitch asked to slow down. Try again${err.retryAfterSeconds ? ` in ${err.retryAfterSeconds} seconds` : ' shortly'}.`;
+      case 'network':
+        return 'Couldn’t reach Twitch. Check your internet connection and try again.';
+      case 'server_error':
+        return 'Twitch had a problem. Try again in a moment.';
+      default:
+        return 'Twitch returned an unexpected response.';
     }
   }
   return 'The action couldn’t be completed.';

@@ -70,7 +70,6 @@ export function KickNotificationsView({ s, onChanged, platform = 'kick' }: { s: 
         <Button
           variant="secondary"
           busy={checking}
-          title={`CONDUIT checks every ${source.pollSeconds} seconds`}
           onClick={() => {
             setChecking(true);
             void api('POST', '/api/notifications/check').finally(() => (setChecking(false), onChanged?.()));
@@ -81,6 +80,10 @@ export function KickNotificationsView({ s, onChanged, platform = 'kick' }: { s: 
         {!editing && <Button onClick={() => setEditing({ mode: 'new' })}>Add streamer</Button>}
       </PageActions>
       <section className="card" aria-label={`${p.name} streamers`}>
+        <p className="muted small">
+          CONDUIT checks {p.name} every {source.pollSeconds} seconds while it’s running, using your {p.name} app (public channel information; no rights over
+          other channels). One post per stream.
+        </p>
         {!source.ready && source.problem && <p className="small text-warn">{source.problem}</p>}
         {notifiers.length === 0 && !editing ? (
           <p className="empty-note">No streamers yet.</p>
@@ -438,6 +441,10 @@ function NotifierEditor({ initial, platform, onClose, onSaved }: { initial: Noti
           </Button>
         </div>
       </div>
+      <p className="muted small">
+        <strong>Send test</strong> posts this notification now, marked as a test, with the streamer’s real current {p.name} data (the role is shown but not pinged). A streamer
+        who is live when added is announced from their next stream.
+      </p>
     </section>
   );
 }

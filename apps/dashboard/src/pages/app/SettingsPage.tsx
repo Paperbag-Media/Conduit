@@ -53,6 +53,12 @@ export function SettingsView({ info, releases, children }: { info: AppInfo | nul
           <Row label="Build">{info ? (info.isPackaged ? 'Installed app' : 'Development build') : '—'}</Row>
           <Row label="Platform">{info ? (info.platform === 'win32' ? 'Windows' : info.platform) : '—'}</Row>
         </dl>
+        <p className="muted small">
+          {channel === 'initial-development'
+            ? 'Versions below 1.0.0 are initial development: features and settings may still change between releases. '
+            : ''}
+          CONDUIT doesn’t check for updates online.
+        </p>
       </section>
       {children}
       <ReleaseNotes releases={releases} current={version} />

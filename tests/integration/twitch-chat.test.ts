@@ -66,14 +66,14 @@ afterEach(async () => {
 });
 
 describe('receiving chat (EventSub over a WebSocket)', () => {
-  it('asks only for chat permissions, then subscribes the session to the channel’s chat, read as the main account', async () => {
+  it('asks for chat and command permissions, then subscribes the session to the channel’s chat, read as the main account', async () => {
     const before = await state();
-    expect(before.scopes).toEqual({ primary: ['user:read:chat', 'user:write:chat'], bot: ['user:write:chat'] });
+    expect(before.scopes).toEqual({ primary: ['user:read:chat', 'user:write:chat', 'moderator:read:followers', 'channel:manage:broadcast', 'moderator:manage:banned_users', 'moderator:manage:chat_messages', 'moderation:read', 'moderator:manage:chat_settings', 'moderator:manage:shield_mode', 'channel:moderate'], bot: ['user:write:chat'] });
     expect(before.chat.receive.status).toBe('disconnected');
 
     await liveChat();
     expect(twitch.sessions).toHaveLength(1);
-    expect(twitch.subscriptions).toEqual([expect.objectContaining({ sessionId: twitch.sessions[0], broadcasterId: streamer.id, userId: streamer.id })]);
+    expect(twitch.subscriptions.filter((s) => s.type === 'channel.chat.message')).toEqual([expect.objectContaining({ sessionId: twitch.sessions[0], broadcasterId: streamer.id, userId: streamer.id })]);
 
     twitch.chat(streamer, viewer, 'hello chat', { badges: [{ set_id: 'subscriber', info: '7' }] });
     const s = await until(state, (x) => x.chat.recent.length === 1);
@@ -113,7 +113,7 @@ describe('receiving chat (EventSub over a WebSocket)', () => {
     const first = twitch.sessions[0]!;
     twitch.reconnect(first);
     await until(() => twitch.sessions, (x) => x.length === 1 && x[0] !== first);
-    expect(twitch.subscriptions).toHaveLength(1);
+    expect(twitch.subscriptions.map((s) => s.type).sort()).toEqual(['channel.ban', 'channel.chat.message', 'channel.unban']);
     twitch.chat(streamer, viewer, 'still here');
     await until(state, (x) => x.chat.recent.some((m) => m.content === 'still here'));
     expect((await state()).chat.receive.status).toBe('connected');
@@ -174,7 +174,7 @@ describe('sending chat', () => {
 
   it('a separate bot account sends instead; the main account then isn’t asked to send', async () => {
     await liveChat();
-    expect((await call<TwitchSetupState>('POST', '/api/twitch/chatbot', { mode: 'separate' })).body.scopes.primary).toEqual(['user:read:chat']);
+    expect((await call<TwitchSetupState>('POST', '/api/twitch/chatbot', { mode: 'separate' })).body.scopes.primary).toEqual(['user:read:chat', 'moderator:read:followers', 'channel:manage:broadcast', 'moderator:manage:banned_users', 'moderator:manage:chat_messages', 'moderation:read', 'moderator:manage:chat_settings', 'moderator:manage:shield_mode', 'channel:moderate']);
     expect((await state()).chat.send.problem).toMatch(/Add or reconnect the bot account/);
     await connect(botAccount, 'bot');
     const s = await state();

@@ -54,14 +54,16 @@ describe('Twitch card', () => {
   it('not set up: Not Connected, with Connect Twitch', async () => {
     const { TwitchCard } = await import('../components/twitch/TwitchSetup');
     const t = text(renderToStaticMarkup(<TwitchCard state={state()} />));
-    expect(t).toMatch(/Twitch Not Connected Account Not Connected Chatbot Main account App Not set up/);
+    expect(t).toMatch(/Twitch Not Connected Account Not Connected Chatbot Main account/);
+    expect(t).not.toMatch(/\bApp\b|Set up/i);
     expect(t).toContain('Connect Twitch');
   });
 
   it('connected: the account, Manage and Disconnect; an expired one asks to reconnect', async () => {
     const { TwitchCard, twitchConnectionTag } = await import('../components/twitch/TwitchSetup');
     const t = text(renderToStaticMarkup(<TwitchCard state={state({ application: configured, primary: streamer })} />));
-    expect(t).toMatch(/Twitch Connected Account RetroLive Chatbot RetroLive App Set up/);
+    expect(t).toMatch(/Twitch Connected Account RetroLive Chatbot RetroLive/);
+    expect(t).not.toMatch(/\bApp\b|Set up/i);
     expect(t).toContain('Manage');
     expect(t).toContain('Disconnect');
     expect(twitchConnectionTag(state({ primary: { ...streamer, status: 'needs_reauth' } }))).toEqual({ label: 'Needs Reconnect', pill: 'pill-bad' });

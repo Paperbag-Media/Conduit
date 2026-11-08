@@ -18,7 +18,7 @@ export function previewKickGiveawayMessage(kind: KickGiveawayMessageKind, templa
 }
 
 /**
- * The giveaway messages the chatbot posts in Kick chat, edited here before anything is sent. Saving checks every
+ * The giveaway messages the chatbot posts in Kick and Twitch chat, edited here before anything is sent. Saving checks every
  * message (one line, Kick's limits, only that message's variables) and sends nothing; the saved text is exactly what is
  * posted, with its variables filled in. There are no ticket or odds variables: those stay private.
  */
@@ -74,6 +74,7 @@ export function KickGiveawayMessagesCard({ saved, onSaved, bare = false }: { sav
   return (
     <section className={bare ? undefined : 'card'} aria-labelledby={bare ? undefined : 'giveaway-kick-messages'} aria-label={bare ? 'Kick chat messages' : undefined}>
       {!bare && <h2 id="giveaway-kick-messages">Kick chat messages</h2>}
+      <p className="muted small">What the chatbot posts in Kick and Twitch chat during a giveaway. Saving sends nothing; ticket counts and odds are never posted.</p>
       <ul className="kmsg-list">
         {KICK_GIVEAWAY_MESSAGE_KINDS.map((k) => {
           const info = KICK_GIVEAWAY_MESSAGES[k];

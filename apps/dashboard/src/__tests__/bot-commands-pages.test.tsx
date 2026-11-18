@@ -61,19 +61,23 @@ describe('Commands hub', () => {
     return renderToStaticMarkup(<CommandsView s={s} />);
   };
 
-  it('has exactly one Commands item in the sidebar (no separate Kick Commands)', async () => {
+  it('has one Commands item under Discord and one under Streaming (no per-platform Commands pages)', async () => {
     const { SECTIONS } = await import('../sections');
-    expect(SECTIONS.filter((s) => /command/i.test(s.label)).map((s) => s.label)).toEqual(['Commands']);
+    expect(SECTIONS.filter((s) => /command/i.test(s.label)).map((s) => [s.group, s.label, s.title])).toEqual([
+      ['discord', 'Commands', 'Discord Commands'],
+      ['streaming', 'Commands', 'Stream Commands'],
+    ]);
     expect(SECTIONS.map((s) => s.id)).not.toContain('kick-commands');
   });
 
-  it('offers Discord, Kick and Twitch tabs only', async () => {
-    const { CommandsPage } = await import('../pages/community/CommandsPage');
-    const html = renderToStaticMarkup(<CommandsPage />);
+  it('Streaming → Commands: Kick and Twitch tabs, with YouTube as Soon (not clickable)', async () => {
+    const { StreamCommandsPage } = await import('../pages/community/CommandsPage');
+    const html = renderToStaticMarkup(<StreamCommandsPage />);
     const tabs = [...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map((m) => m[1]!.replace(/<[^>]+>/g, '').trim());
-    expect(tabs).toEqual(['Discord', 'Kick', 'Twitch']);
+    expect(tabs).toEqual(['Kick', 'Twitch']);
     expect(html).toContain('aria-selected="true"');
-    expect(html).not.toMatch(/YouTube/);
+    expect(html).toMatch(/<span class="platform-tab tab-soon" aria-disabled="true" title="Coming soon">.*?YouTube<span class="nav-phase">Soon<\/span><\/span>/);
+    expect(html).not.toMatch(/Discord/);
   });
 
   it('Discord: custom commands are listed apart from the default commands', async () => {

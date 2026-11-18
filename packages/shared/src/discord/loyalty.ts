@@ -164,7 +164,7 @@ export const rewardSchema = z.strictObject({
   /** Limited quantity left; null = unlimited. */
   stock: z.number().int().min(0).max(1_000_000).nullable().default(null),
 });
-export type RewardInput = z.input<typeof rewardSchema>;
+
 
 const memberId = z.string().regex(/^\d{1,25}$/, 'Unknown member');
 const reason = z.string().trim().min(3, 'Give a reason (at least 3 characters)').max(200, 'Up to 200 characters');
@@ -329,8 +329,6 @@ export interface LoyaltyState {
     /** Members with XP (all servers) and their total XP. */
     members: number;
     totalXp: number;
-    /** Points history from Kick before Loyalty became Discord-only: kept, not used. */
-    legacyKick: { accounts: number; points: number };
   };
   /** Servers the bot is in (and any with XP records), for the leaderboard and settings. */
   guilds: LoyaltyGuild[];

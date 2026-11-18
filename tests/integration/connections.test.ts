@@ -134,12 +134,13 @@ describe('local access protection (no CONDUIT login)', () => {
     expect((await h.call('GET', '/api/connections', { headers: { Origin: 'https://evil.example' } })).status).toBe(403);
   });
 
-  it('refuses WebSocket upgrades without the key', async () => {
-    expect(await upgradeStatus(h, {}, '/ws', false)).toBe(401);
+  it('never opens a WebSocket, with or without the key', async () => {
+    expect(await upgradeStatus(h, {}, '/ws', false)).not.toBe(101);
+    expect(await upgradeStatus(h, {}, '/ws')).not.toBe(101);
   });
 
-  it('still refuses the dormant account API without a CONDUIT session, even with the key', async () => {
-    expect((await h.call('GET', '/api/profiles')).status).toBe(401);
-    expect((await h.call('GET', '/api/admin/users')).status).toBe(401);
+  it('no longer has the account API: those paths are unknown, even with the key', async () => {
+    for (const p of ['/api/setup/status', '/api/auth/session', '/api/profiles', '/api/admin/users']) expect((await h.call('GET', p)).status).toBe(404);
+    expect((await h.call('POST', '/api/auth/login', { body: { username: 'owner', password: 'x' } })).status).toBe(404);
   });
 });

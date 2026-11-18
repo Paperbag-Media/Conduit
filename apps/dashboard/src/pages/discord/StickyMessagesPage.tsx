@@ -15,7 +15,7 @@ const STATUS: Record<StickyMessageView['status'], { label: string; pill: string 
   problem: { label: 'Needs attention', pill: 'pill-warn' },
 };
 
-/** Discord Sticky Messages: a message kept at the bottom of a channel. Discord only. */
+/** Discord → Auto Messages → Sticky: a message kept at the bottom of a channel. */
 export function StickyMessagesPage() {
   const backend = useBackendStatus();
   const { data, error, reload } = useAsync(() => api<StickyMessagesState>('GET', '/api/discord/stickies'), [backend?.state === 'running']);

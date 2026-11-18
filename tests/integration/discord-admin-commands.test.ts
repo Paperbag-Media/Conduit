@@ -117,7 +117,7 @@ describe('/sticky', () => {
 
   it('set creates a sticky (\\n starts a new line), set again changes its text, list and remove', async () => {
     const r = await reply(run('sticky', sub('set', [{ name: 'channel', type: 7, value: RULES, label: 'rules' }, { name: 'message', type: 3, value: 'Be kind\\nNo spam' }])));
-    expect(r.content).toBe(`<#${RULES}> now has a sticky message. Edit it further in CONDUIT → Sticky Messages.`);
+    expect(r.content).toBe(`<#${RULES}> now has a sticky message. Edit it further in CONDUIT → Discord → Auto Messages.`);
     expect(await stickies()).toEqual([expect.objectContaining({ name: '#rules', channelId: RULES, message: { content: 'Be kind\nNo spam', embed: null } })]);
     await reply(run('sticky', sub('set', [{ name: 'channel', type: 7, value: RULES }, { name: 'message', type: 3, value: 'Be nice' }])));
     expect((await stickies())[0]!.message.content).toBe('Be nice');

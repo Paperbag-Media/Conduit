@@ -107,8 +107,8 @@ async function renderKick(s: KickModerationState) {
   return { html, t: text(html) };
 }
 async function renderDiscord(s: DiscordModerationState) {
-  const { DiscordModerationView } = await import('../pages/community/ModerationPage');
-  const html = renderToStaticMarkup(<DiscordModerationView s={s} />);
+  const { DiscordCommandLog } = await import('../pages/community/ModerationPage');
+  const html = renderToStaticMarkup(<DiscordCommandLog s={s} />);
   return { html, t: text(html) };
 }
 
@@ -179,41 +179,38 @@ describe('Twitch Moderation page', () => {
 });
 
 describe('navigation', () => {
-  it('is organised by platform; every feature has exactly one place', async () => {
+  it('is organised as Discord and Streaming; every feature has exactly one place', async () => {
     const { SECTIONS, SECTION_GROUPS } = await import('../sections');
-    expect(SECTION_GROUPS.map((x) => x.label ?? '-')).toEqual(['-', 'Discord', 'Kick', 'Twitch', 'YouTube', '-']);
+    expect(SECTION_GROUPS.map((x) => x.label ?? '-')).toEqual(['-', 'Discord', 'Streaming', '-']);
     const inGroup = (g: string) => SECTIONS.filter((s) => s.group === g).map((s) => (s.soon ? `${s.label} (Soon)` : s.label));
-    expect(inGroup('overview')).toEqual(['Dashboard', 'Commands', 'Giveaways', 'Timed Messages']);
-    expect(inGroup('discord')).toEqual(['Discord Bot', 'Sticky Messages', 'Embed Creator', 'Loyalty & Rewards']);
-    expect(inGroup('kick')).toEqual(['Kick Moderation', 'Kick Notifications', 'Clips']);
+    expect(inGroup('overview')).toEqual(['Dashboard']);
+    expect(inGroup('discord')).toEqual(['Discord Bot', 'Commands', 'Embed Creator', 'Auto Messages', 'Giveaways', 'Loyalty & Rewards']);
+    expect(inGroup('streaming')).toEqual(['Commands', 'Moderation', 'Notifications', 'Clips', 'Timed Messages', 'Giveaways']);
     // Connections are managed from the Dashboard's cards, not separate pages.
     expect(SECTIONS.map((s) => s.label).filter((l) => /Kick Accounts|Bot Accounts|Connections/.test(l))).toEqual([]);
-    expect(inGroup('twitch')).toEqual(['Twitch Notifications', 'Twitch Moderation']);
-    // YouTube is only its heading (Soon) until it is built; OBS Overlays stands alone.
-    expect(inGroup('youtube')).toEqual([]);
-    expect(SECTION_GROUPS.find((g) => g.id === 'youtube')?.soon).toBe(true);
-    expect(inGroup('planned')).toEqual(['OBS Overlays (Soon)']);
+    // Widgets stands alone until it is built (YouTube is a Soon tab on the Streaming pages).
+    expect(inGroup('planned')).toEqual(['Widgets (Soon)']);
     // No duplicates, and the retired workflow builder is gone.
     const ids = SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).not.toContain('automations');
-    expect(ids.filter((id) => id.includes('sticky'))).toEqual(['sticky-messages']);
-    expect(ids.filter((id) => id.includes('timed'))).toEqual(['timed-messages']);
+    // Two pages share a sidebar label, so their titles say which.
+    const titles = SECTIONS.map((s) => s.title ?? s.label);
+    expect(new Set(titles).size).toBe(titles.length);
   });
 
-  it('the sidebar marks platform categories, and Soon items are gray and not clickable', async () => {
+  it('the sidebar has the Discord and Streaming categories, and Soon items are gray and not clickable', async () => {
     const { App } = await import('../App');
     const html = renderToStaticMarkup(<App />);
     const t = text(html);
     expect(t).toMatch(
-      /^\s*CONDUIT Dashboard Commands Giveaways Timed Messages Discord Discord Bot Sticky Messages Embed Creator Loyalty &(?:amp;)? Rewards Kick Kick Moderation Kick Notifications Clips Twitch Twitch Notifications Twitch Moderation YouTube Soon OBS Overlays Soon Settings Made by Retronix/,
+      /^\s*CONDUIT Dashboard Discord Discord Bot Commands Embed Creator Auto Messages Giveaways Loyalty &(?:amp;)? Rewards Streaming Commands Moderation Notifications Clips Timed Messages Giveaways Widgets Soon Settings Made by Retronix/,
     );
-    for (const g of ['discord', 'kick', 'twitch']) expect(html).toMatch(new RegExp(`aria-expanded="true" aria-controls="nav-group-${g}"`));
-    for (const p of ['discord', 'kick', 'twitch', 'youtube']) expect(html).toContain(`nav-platform nav-platform-${p}`);
+    for (const g of ['discord', 'streaming']) expect(html).toMatch(new RegExp(`aria-expanded="true" aria-controls="nav-group-${g}"`));
+    expect(html).toContain('nav-platform nav-platform-discord');
     // Soon entries are plain text (no button), marked disabled, with the gray Soon label.
-    expect(html).toMatch(/<span class="nav-item nav-soon" aria-disabled="true" title="Coming soon">.*?OBS Overlays.*?<span class="nav-phase">Soon<\/span><\/span>/);
-    expect(html).toMatch(/<span class="nav-group-label nav-group-soon[^"]*" aria-disabled="true" title="Coming soon"><span class="nav-group-name">YouTube<\/span><span class="nav-phase">Soon<\/span><\/span>/);
-    expect(html).not.toMatch(/<button[^>]*>(?:(?!<\/button>).)*(?:YouTube|OBS Overlays)/);
+    expect(html).toMatch(/<span class="nav-item nav-soon" aria-disabled="true" title="Coming soon">.*?Widgets.*?<span class="nav-phase">Soon<\/span><\/span>/);
+    expect(html).not.toMatch(/<button[^>]*>(?:(?!<\/button>).)*(?:YouTube|Widgets)/);
   });
 
   it('the page header is the title and its summary, with no backend pill while it runs', async () => {

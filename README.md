@@ -2,7 +2,7 @@
 
 **The Link Between Everything.** A desktop app for running your Discord, Kick and Twitch from one place.
 
-- **Commands, giveaways and timed messages** for Discord, Kick, and  Twitch
+- **Commands, giveaways and timed messages** for Discord, Kick and Twitch
 - **Moderation** and protection
 - **Kick and Twitch go-live notifications** and Kick **clips** posted to Discord
 - **Discord extras:** sticky messages, embeds, levels and rewards

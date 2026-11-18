@@ -1,6 +1,6 @@
 {
   "name": "@conduit/database",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "private": true,
   "description": "SQLite access, versioned migrations and repositories.",
   "exports": {

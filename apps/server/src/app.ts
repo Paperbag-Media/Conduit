@@ -1,7 +1,6 @@
 import express, { type ErrorRequestHandler } from 'express';
 import { getSchemaVersion, type Database } from '@conduit/database';
 import type { Logger } from '@conduit/logger';
-import { HashingBusyError } from '@conduit/security';
 import type { ApiError, HealthResponse, ServerConfig } from '@conduit/shared';
 import { AppError } from './errors';
 import { createConnectionRouter } from './http/connection-routes';
@@ -11,7 +10,6 @@ import { createFeatureRouter } from './http/feature-routes';
 import { createLoyaltyRouter } from './http/loyalty-routes';
 import { createMaintenanceRouter } from './http/maintenance-routes';
 import { requireLocalKey } from './http/local-access';
-import { createApiRouter } from './http/routes';
 import { corsGuard, hostGuard, securityHeaders } from './security';
 import type { Services } from './services';
 
@@ -22,7 +20,7 @@ export interface AppContext {
   version: string;
   startedAt: Date;
   services: Services;
-  /** Required on every /api request except health, and on WebSocket upgrades (see http/local-access.ts). */
+  /** Required on every /api request except health (see http/local-access.ts). */
   localKey: string;
 }
 
@@ -65,8 +63,6 @@ export function createApp(ctx: AppContext): express.Express {
   app.use('/api', createFeatureRouter(ctx.services));
   app.use('/api', createLoyaltyRouter(ctx.services));
   app.use('/api', createMaintenanceRouter(ctx.services));
-  // Account API (dormant on the desktop since Phase 2.3): additionally requires a CONDUIT session.
-  app.use('/api', createApiRouter(ctx.services));
 
   app.use((_req, res) => {
     const body: ApiError = { error: { code: 'not_found', message: 'Not found' } };
@@ -79,11 +75,7 @@ export function createApp(ctx: AppContext): express.Express {
       res.status(err.status).json({ error: err.toBody() } satisfies ApiError);
       return;
     }
-    if (err instanceof HashingBusyError) {
-      res.setHeader('Retry-After', '2');
-      res.status(503).json({ error: { code: 'service_unavailable', message: 'Server is busy, try again shortly' } } satisfies ApiError);
-      return;
-    }
+
     // body-parser errors (malformed JSON, oversized body) carry a 4xx status.
     const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 500 ? err.status : 500;
     if (status === 500) {

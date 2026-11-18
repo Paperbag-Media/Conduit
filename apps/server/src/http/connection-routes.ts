@@ -302,7 +302,7 @@ export function createConnectionRouter(services: Services): Router {
   });
 
   router.post('/kick/chat/retry', async (_req, res) => {
-    await services.kickChat.ensure();
+    await services.kickChat.retry();
     res.json(await kick.state());
   });
 

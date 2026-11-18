@@ -4,8 +4,8 @@ import {
   EDITABLE_FIELDS,
   GIVEAWAY_DESCRIPTION_MAX,
   GIVEAWAY_DURATION_MAX_MINUTES,
-  GIVEAWAY_PLATFORMS,
   GIVEAWAY_PRIZE_MAX,
+  giveawaySide,
   GIVEAWAY_WINNERS_MAX,
   KICK_REWARD_DEFAULTS,
   KICK_GIVEAWAY_MESSAGE_KINDS,
@@ -13,6 +13,7 @@ import {
   type DiscordChannelRef,
   type DiscordChannelsState,
   type GiveawayPlatform,
+  type GiveawaySide,
   type GiveawaysState,
   type GiveawayStatus,
   type GiveawayView,
@@ -44,99 +45,131 @@ const STATUS_PILL: Record<GiveawayStatus, string> = {
   cancelled: 'pill-muted',
 };
 
-/** Giveaways: start giveaways and run them; viewers enter from Kick and Twitch chat (!enter) and Discord (the embed's buttons). */
-export function GiveawaysPage() {
+function useGiveaways() {
   const backend = useBackendStatus();
   const running = backend?.state === 'running';
-  const { data, error, reload } = useAsync(() => api<GiveawaysState>('GET', '/api/giveaways'), [running]);
-  usePolling(reload, error ? 2000 : POLL_MS, [data, error]);
+  const state = useAsync(() => api<GiveawaysState>('GET', '/api/giveaways'), [running]);
+  usePolling(state.reload, state.error ? 2000 : POLL_MS, [state.data, state.error]);
+  return state;
+}
+
+function GiveawaysPage({ side }: { side: GiveawaySide }) {
+  const { data, error, reload } = useGiveaways();
   if (!data) return <Loading label={error ? `Waiting for the CONDUIT backend… (${errorMessage(error)})` : 'Loading giveaways…'} />;
-  return <GiveawaysView s={data} onChanged={reload} />;
+  return <GiveawaysView s={data} side={side} onChanged={reload} />;
+}
+
+/** Streaming → Giveaways: viewers enter from Kick and Twitch chat with !enter. */
+export function StreamGiveawaysPage() {
+  return <GiveawaysPage side="stream" />;
+}
+
+/** Discord → Giveaways: members enter with the embed's Enter Giveaway button. Runs separately from stream giveaways. */
+export function DiscordGiveawaysPage() {
+  return <GiveawaysPage side="discord" />;
 }
 
 /**
- * Giveaways, on two browser-style tabs: **Giveaways** (the one running, then the completed ones as a compact list that
- * opens for details) and **Messages** (what the chatbot posts).
+ * One side's giveaways. Stream giveaways are on two browser-style tabs: **Giveaways** (the one running, then the
+ * completed ones as a compact list that opens for details) and **Messages** (what the chatbot posts in chat). Discord
+ * giveaways have no chat messages, so they're the list only.
  */
-export function GiveawaysView({ s, onChanged, initialTab = 'giveaways' }: { s: GiveawaysState; onChanged?: () => void; initialTab?: 'giveaways' | 'messages' }) {
+export function GiveawaysView({
+  s,
+  side = 'stream',
+  onChanged,
+  initialTab = 'giveaways',
+}: {
+  s: GiveawaysState;
+  side?: GiveawaySide;
+  onChanged?: () => void;
+  initialTab?: 'giveaways' | 'messages';
+}) {
   const [tab, setTab] = useState(initialTab);
   const [creating, setCreating] = useState(false);
+  const mine = s.giveaways.filter((g) => giveawaySide(g.platforms) === side);
   // Active: running, entries closed (waiting for the draw), and drafts left by an earlier version.
-  const active = s.giveaways.filter((g) => g.status === 'open' || g.status === 'closed' || g.status === 'draft');
-  const completed = s.giveaways.filter((g) => g.status === 'drawn');
+  const active = mine.filter((g) => g.status === 'open' || g.status === 'closed' || g.status === 'draft');
+  const completed = mine.filter((g) => g.status === 'drawn');
   const paged = usePaged(completed);
+  const list = (
+    <div className="stack">
+      {creating && (
+        <GiveawayEditor
+          side={side}
+          initial={null}
+          defaultChannel={s.discordChannelDefault}
+          kickRewards={s.kickRewards}
+          onCancel={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
+            onChanged?.();
+          }}
+        />
+      )}
+
+      <section aria-labelledby="giveaways-active">
+        <h3 id="giveaways-active" className="giveaway-group">
+          Current giveaway
+        </h3>
+        {active.length === 0 ? (
+          <p className="empty-note">No giveaway running.</p>
+        ) : (
+          active.map((g) => <GiveawayCard key={g.id} g={g} onChanged={onChanged} />)
+        )}
+      </section>
+
+      <section aria-labelledby="giveaways-completed">
+        <h3 id="giveaways-completed" className="giveaway-group">
+          Completed
+        </h3>
+        {completed.length === 0 ? (
+          <p className="empty-note">No completed giveaways yet.</p>
+        ) : (
+          <div className="giveaway-rows">
+            {paged.rows.map((g) => (
+              <details key={g.id} className="giveaway-row">
+                <summary>
+                  <span className="giveaway-row-prize">{g.prize}</span>
+                  <span className="muted small">
+                    {g.drawnAt ? formatTime(g.drawnAt) : ''} · {g.entryCount} {g.entryCount === 1 ? 'entry' : 'entries'} ·{' '}
+                    {winnerNames(g) || 'no winners'}
+                  </span>
+                </summary>
+                <GiveawayCard g={g} onChanged={onChanged} inset />
+              </details>
+            ))}
+          </div>
+        )}
+        <Pager {...paged} label="Completed giveaways" />
+      </section>
+    </div>
+  );
   return (
     <div className="stack">
-      {tab === 'giveaways' && !creating && (
+      {(side === 'discord' || tab === 'giveaways') && !creating && (
         <PageActions>
           <Button onClick={() => setCreating(true)}>New giveaway</Button>
         </PageActions>
       )}
-      <BrowserTabs
-        idPrefix="giveaways"
-        label="Giveaways"
-        tabs={[
-          { id: 'giveaways', label: 'Giveaways', count: active.length + completed.length },
-          { id: 'messages', label: 'Messages', count: KICK_GIVEAWAY_MESSAGE_KINDS.length },
-        ]}
-        active={tab}
-        onChange={setTab}
-        panels={{
-          giveaways: (
-            <div className="stack">
-              {creating && (
-                <GiveawayEditor
-                  initial={null}
-                  defaultChannel={s.discordChannelDefault}
-                  kickRewards={s.kickRewards}
-                  onCancel={() => setCreating(false)}
-                  onSaved={() => {
-                    setCreating(false);
-                    onChanged?.();
-                  }}
-                />
-              )}
-
-              <section aria-labelledby="giveaways-active">
-                <h3 id="giveaways-active" className="giveaway-group">
-                  Current giveaway
-                </h3>
-                {active.length === 0 ? (
-                  <p className="empty-note">No giveaway running.</p>
-                ) : (
-                  active.map((g) => <GiveawayCard key={g.id} g={g} onChanged={onChanged} />)
-                )}
-              </section>
-
-              <section aria-labelledby="giveaways-completed">
-                <h3 id="giveaways-completed" className="giveaway-group">
-                  Completed
-                </h3>
-                {completed.length === 0 ? (
-                  <p className="empty-note">No completed giveaways yet.</p>
-                ) : (
-                  <div className="giveaway-rows">
-                    {paged.rows.map((g) => (
-                      <details key={g.id} className="giveaway-row">
-                        <summary>
-                          <span className="giveaway-row-prize">{g.prize}</span>
-                          <span className="muted small">
-                            {g.drawnAt ? formatTime(g.drawnAt) : ''} · {g.entryCount} {g.entryCount === 1 ? 'entry' : 'entries'} ·{' '}
-                            {winnerNames(g) || 'no winners'}
-                          </span>
-                        </summary>
-                        <GiveawayCard g={g} onChanged={onChanged} inset />
-                      </details>
-                    ))}
-                  </div>
-                )}
-                <Pager {...paged} label="Completed giveaways" />
-              </section>
-            </div>
-          ),
-          messages: <KickGiveawayMessagesCard key={JSON.stringify(s.kickMessages)} saved={s.kickMessages} onSaved={() => onChanged?.()} bare />,
-        }}
-      />
+      {side === 'discord' ? (
+        <div className="card">{list}</div>
+      ) : (
+        <BrowserTabs
+          idPrefix="giveaways"
+          label="Giveaways"
+          tabs={[
+            { id: 'giveaways', label: 'Giveaways', count: active.length + completed.length },
+            { id: 'messages', label: 'Messages', count: KICK_GIVEAWAY_MESSAGE_KINDS.length },
+          ]}
+          active={tab}
+          onChange={setTab}
+          panels={{
+            giveaways: list,
+            messages: <KickGiveawayMessagesCard key={JSON.stringify(s.kickMessages)} saved={s.kickMessages} onSaved={() => onChanged?.()} bare />,
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -191,6 +224,7 @@ export function GiveawayCard({ g, onChanged, inset = false }: { g: GiveawayView;
 
       {editing ? (
         <GiveawayEditor
+          side={giveawaySide(g.platforms)}
           initial={g}
           defaultChannel={null}
           kickRewards={null}
@@ -487,12 +521,14 @@ function channelRef(key: string): DiscordChannelRef {
  * the rest is fixed once it started).
  */
 export function GiveawayEditor({
+  side,
   initial,
   defaultChannel,
   kickRewards,
   onCancel,
   onSaved,
 }: {
+  side: GiveawaySide;
   initial: GiveawayView | null;
   defaultChannel: DiscordChannelRef;
   kickRewards: GiveawaysState['kickRewards'] | null;
@@ -503,7 +539,7 @@ export function GiveawayEditor({
   const [description, setDescription] = useState(initial?.description ?? '');
   const [winnerCount, setWinnerCount] = useState(String(initial?.winnerCount ?? 1));
   const [durationMinutes, setDurationMinutes] = useState(initial?.durationMinutes == null ? '' : String(initial.durationMinutes));
-  const [platforms, setPlatforms] = useState<GiveawayPlatform[]>(initial?.platforms ?? ['kick', 'discord']);
+  const [platforms, setPlatforms] = useState<GiveawayPlatform[]>(initial?.platforms ?? (side === 'discord' ? ['discord'] : ['kick']));
   const [discordChannel, setDiscordChannel] = useState(
     channelKey(initial ? (initial.discord ? { guildId: initial.discord.guildId, channelId: initial.discord.channelId } : null) : defaultChannel),
   );
@@ -604,21 +640,23 @@ export function GiveawayEditor({
       </div>
       {isNew && (
         <>
-          <fieldset className="choice-list">
-            <legend className="small">Entry on</legend>
-            {GIVEAWAY_PLATFORMS.map((p) => (
-              <label key={p}>
-                <input
-                  type="checkbox"
-                  checked={platforms.includes(p)}
-                  onChange={(e) => setPlatforms((list) => (e.target.checked ? [...list, p] : list.filter((x) => x !== p)))}
-                />{' '}
-                {PLATFORM_LABEL[p]}
-              </label>
-            ))}
-            {err('platforms') && <span className="field-error">{err('platforms')}</span>}
-          </fieldset>
-          {platforms.includes('discord') && <DiscordChannelPicker value={discordChannel} onChange={setDiscordChannel} error={err('discordChannel')} />}
+          {side === 'stream' && (
+            <fieldset className="choice-list">
+              <legend className="small">Entry on</legend>
+              {(['kick', 'twitch'] as const).map((p) => (
+                <label key={p}>
+                  <input
+                    type="checkbox"
+                    checked={platforms.includes(p)}
+                    onChange={(e) => setPlatforms((list) => (e.target.checked ? [...list, p] : list.filter((x) => x !== p)))}
+                  />{' '}
+                  {PLATFORM_LABEL[p]}
+                </label>
+              ))}
+              {err('platforms') && <span className="field-error">{err('platforms')}</span>}
+            </fieldset>
+          )}
+          {side === 'discord' && <DiscordChannelPicker value={discordChannel} onChange={setDiscordChannel} error={err('discordChannel')} />}
           {kick && (
             <fieldset className="choice-list giveaway-tickets">
               <legend className="small">Kick bonus tickets</legend>

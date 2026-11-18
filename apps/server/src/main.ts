@@ -1,8 +1,7 @@
 /**
- * Server entry point. Runs either as an Electron utility process (launched by the desktop app's
- * backend supervisor) or standalone with Node.js (`npm run server`), e.g. on a VPS later.
+ * Server entry point. Runs as an Electron utility process, launched by the desktop app's backend supervisor, which
+ * supplies the data folder, the local access key and the credential vault. It refuses to run on its own.
  */
-import os from 'node:os';
 import path from 'node:path';
 import {
   applyPendingRestore,
@@ -11,11 +10,9 @@ import {
   migrate,
   migrations,
   openDatabase,
-  defaultDataDirectory,
   type Database,
 } from '@conduit/database';
 import { createLogger } from '@conduit/logger';
-import { generateToken, PasswordHasher, verifyArgon2Implementation } from '@conduit/security';
 import {
   ConfigError,
   EXIT_CONFIG_ERROR,
@@ -24,8 +21,8 @@ import {
   type SupervisorMessage,
   type WorkerMessage,
 } from '@conduit/shared';
-import { writeInstanceLock } from './instance-lock';
-import { ParentPortVault, UnavailableVault, type CredentialVault } from './app/vault';
+
+import { ParentPortVault } from './app/vault';
 import { startServer, type RunningServer } from './server';
 import { createServices } from './services';
 
@@ -34,17 +31,23 @@ interface ParentPort {
   postMessage(message: unknown): void;
 }
 const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).parentPort;
-const notifyParent = (message: WorkerMessage) => parentPort?.postMessage(message);
-/** Encrypted token storage lives in the desktop main process; a standalone server has none (nothing is stored). */
-const vault: CredentialVault = parentPort ? new ParentPortVault(parentPort) : new UnavailableVault();
+if (!parentPort) {
+  // Without the desktop app there is no credential vault and no local access key, so nothing could be connected.
+  console.error('CONDUIT’s backend runs inside the CONDUIT app. Start CONDUIT instead.');
+  process.exit(EXIT_CONFIG_ERROR);
+}
+const notifyParent = (message: WorkerMessage) => parentPort.postMessage(message);
+/** Encrypted token storage lives in the desktop main process, reached over the private parent port. */
+const vault = new ParentPortVault(parentPort);
 
 const version = typeof __CONDUIT_VERSION__ === 'string' ? __CONDUIT_VERSION__ : '0.0.0-dev';
 
 async function main(): Promise<void> {
   let config;
-  // An explicit data directory (always the case under the desktop app) is used as-is; otherwise the default location.
+  // The desktop app always passes the data directory and the local access key.
   try {
-    config = loadServerConfig(process.env, { dataDir: defaultDataDirectory(process.env, os.homedir()) });
+    config = loadServerConfig(process.env);
+    if (!config.localKey) throw new Error('CONDUIT_LOCAL_KEY is missing: the CONDUIT app supplies it.');
   } catch (err) {
     const message = err instanceof ConfigError ? err.message : String(err);
     console.error(message);
@@ -62,7 +65,6 @@ async function main(): Promise<void> {
 
   let db: Database | undefined;
   let server: RunningServer | undefined;
-  let releaseLock: (() => void) | undefined;
   let shuttingDown = false;
 
   const shutdown = async (reason: string, exitCode = 0) => {
@@ -72,7 +74,6 @@ async function main(): Promise<void> {
     try {
       await server?.close();
       db?.close();
-      releaseLock?.();
     } catch (err) {
       logger.error('error during shutdown', { err });
       exitCode ||= 1;
@@ -84,10 +85,10 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  parentPort?.on('message', (e) => {
+  parentPort.on('message', (e) => {
     const msg = e.data as SupervisorMessage | undefined;
     if (msg?.type === 'shutdown') void shutdown('supervisor request');
-    else if (msg?.type === 'vault.response' && vault instanceof ParentPortVault) vault.handleMessage(msg);
+    else if (msg?.type === 'vault.response') vault.handleMessage(msg);
   });
   process.on('uncaughtException', (err) => {
     logger.error('uncaught exception', { err });
@@ -105,7 +106,6 @@ async function main(): Promise<void> {
     });
     if (restored) (restored.ok ? logger.info : logger.error)('backup restore', { ok: restored.ok, file: restored.file, message: restored.message });
     db = openDatabase(path.join(config.dataDir, DATABASE_FILE));
-    releaseLock = writeInstanceLock(config.dataDir);
     const problems = checkIntegrity(db);
     if (problems.length > 0) {
       // Refuse to write to a damaged database; the operator should restore a backup.
@@ -114,32 +114,14 @@ async function main(): Promise<void> {
     const result = migrate(db, migrations);
     logger.info('database ready', { schemaVersion: result.currentVersion, applied: result.applied });
 
-    // Known-answer self-test: startup fails (no fallback algorithm) unless Argon2id works and is standard.
-    await verifyArgon2Implementation();
-    const hasher = new PasswordHasher({
-      memoryKiB: config.argon2MemoryKiB,
-      passes: config.argon2Passes,
-      parallelism: config.argon2Parallelism,
-    });
-
-    // Account setup is dormant since Phase 2.3; without an explicit token it gets an unguessable one nobody holds.
-    const setupToken = config.setupToken ?? generateToken();
-
-    let localKey = config.localKey;
-    if (!localKey) {
-      localKey = generateToken();
-      // Standalone server only (the desktop app supplies its own key). Printed to the console, never to the log file.
-      process.stdout.write(
-        `\nCONDUIT local access key (valid until restart); send it as the X-CONDUIT-Local-Key header:\n  ${localKey}\n\n`,
-      );
-    }
+    const localKey = config.localKey!;
 
     const requestRestart = () => {
-      // The supervisor restarts the backend right away (not counted as a crash); a standalone server just stops.
+      // The supervisor restarts the backend right away (not counted as a crash).
       notifyParent({ type: 'restart' });
       void shutdown('restart requested (restore)', EXIT_RESTART);
     };
-    const services = createServices({ db, config, hasher, logger, setupToken, vault, version, requestRestart });
+    const services = createServices({ db, config, logger, vault, version, requestRestart });
     server = await startServer({ config, db, logger, version, startedAt: new Date(), services, localKey });
     logger.info('listening', {
       url: `http://${config.host}:${server.port}`,

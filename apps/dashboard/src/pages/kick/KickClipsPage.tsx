@@ -10,7 +10,7 @@ const POLL_MS = 60_000;
 /** Clips shown at first; "Show more" adds this many each time. */
 const PAGE = 20;
 
-/** Kick → Clips: your channel's Kick clips, posted in Discord and saved on this PC. */
+/** Streaming → Clips → Kick: your channel's Kick clips, posted in Discord and saved on this PC. */
 export function KickClipsPage() {
   const backend = useBackendStatus();
   const { data, error, reload } = useAsync(() => api<KickClipsState>('GET', '/api/kick/clips'), [backend?.state === 'running']);

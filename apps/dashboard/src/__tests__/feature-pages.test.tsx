@@ -41,16 +41,14 @@ describe('Timed Messages page', () => {
 
   it('empty state and New button', async () => {
     const { TimedMessagesView } = await import('../pages/community/TimedMessagesPage');
-    const t = text(renderToStaticMarkup(<TimedMessagesView s={state()} />));
+    const t = text(renderToStaticMarkup(<TimedMessagesView s={state()} platform="kick" />));
     expect(t).toContain('No timed messages yet.');
     expect(t).toContain('New timed message');
   });
 
   it('shows schedule, destination, on/off and the latest result for each', async () => {
     const { TimedMessagesView } = await import('../pages/community/TimedMessagesPage');
-    const html = renderToStaticMarkup(
-      <TimedMessagesView
-        s={state({
+    const s = state({
           timedMessages: [
             {
               platform: 'discord',
@@ -91,14 +89,27 @@ describe('Timed Messages page', () => {
               problem: null,
             },
           ],
-        })}
-      />,
-    );
-    const t = text(html);
+        });
+    // Each page shows one platform's timed messages.
+    const discord = renderToStaticMarkup(<TimedMessagesView s={s} platform="discord" />);
+    const html = renderToStaticMarkup(<TimedMessagesView s={s} platform="kick" />);
+    expect(text(discord)).not.toContain('Hydrate');
+    expect(text(html)).not.toContain('Socials');
+    const t = text(discord + html);
     expect(t).toMatch(/Socials → #general in Retro Server every 30 minutes, once there were at least 20 chat messages Follow us!/);
     expect(t).toMatch(/Posted 7\/20 messages Edit Duplicate Delete…/);
     expect(t).toMatch(/Hydrate → retronix’s Kick chat after 50 chat messages Drink water! Not posted yet/);
     expect(html).toMatch(/aria-label="Hydrate: off"/);
+  });
+});
+
+describe('Discord → Auto Messages', () => {
+  it('has Sticky and Timed tabs, Sticky first', async () => {
+    const { AutoMessagesPage } = await import('../pages/discord/AutoMessagesPage');
+    const html = renderToStaticMarkup(<AutoMessagesPage />);
+    const tabs = [...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map((m) => m[1]!.replace(/<[^>]+>/g, '').trim());
+    expect(tabs).toEqual(['Sticky', 'Timed']);
+    expect(html).toMatch(/id="auto-messages-tab-sticky" aria-selected="true"/);
   });
 });
 
@@ -335,9 +346,9 @@ describe('Kick → Clips page', () => {
     postProblem: null,
   };
 
-  it('sits in the Kick group of the sidebar', async () => {
+  it('sits in the Streaming group of the sidebar', async () => {
     const { SECTIONS } = await import('../sections');
-    expect(SECTIONS.find((s) => s.id === 'kick-clips')).toMatchObject({ label: 'Clips', group: 'kick' });
+    expect(SECTIONS.find((s) => s.id === 'clips')).toMatchObject({ label: 'Clips', group: 'streaming' });
   });
 
   it('has its own sidebar icon (a clapperboard), like every section — none falls back to the plain square', async () => {
@@ -345,7 +356,7 @@ describe('Kick → Clips page', () => {
     const { NavIcon } = await import('../components/NavIcon');
     const fallback = 'd="M3 3h10v10H3z"';
     expect(SECTIONS.filter((s) => renderToStaticMarkup(<NavIcon id={s.id} />).includes(fallback)).map((s) => s.id)).toEqual([]);
-    expect(renderToStaticMarkup(<NavIcon id="kick-clips" />)).toContain('d="M2.5 7h11v6.5h-11zM2.5 4.5h11V7h-11z');
+    expect(renderToStaticMarkup(<NavIcon id="clips" />)).toContain('d="M2.5 7h11v6.5h-11zM2.5 4.5h11V7h-11z');
   });
 
   it('settings first, then the clips; empty or not connected says so', async () => {

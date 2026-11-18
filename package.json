@@ -1,6 +1,6 @@
 {
   "name": "conduit",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "description": "CONDUIT — Creator Management Platform. The Link Between Everything.",
@@ -19,8 +19,8 @@
     "dev": "node scripts/dev.mjs",
     "build": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/build.mjs",
     "start": "node scripts/start.mjs",
-    "server": "node apps/server/dist/server.cjs",
-    "recover-admin": "node apps/server/dist/recover-admin.cjs",
+
+
     "typecheck": "tsc -p tsconfig.json && tsc -p apps/dashboard/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

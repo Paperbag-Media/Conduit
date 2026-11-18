@@ -49,6 +49,7 @@ function chatState(
       status: 'disconnected',
       delivery: 'unconfirmed',
       problem: null,
+      warning: null,
       localTarget: 'http://127.0.0.1:47822',
       webhookPath: '/kick/webhook',
       lastEventAt: null,
@@ -289,10 +290,24 @@ describe('Kick live chat', () => {
   });
 
   it('always offers a way to re-check the subscription once the main account is connected', async () => {
-    expect(await dialog(state({ primary: streamer, chat: chatState({ receive: { status: 'connected' } }) }))).toContain('Check subscription');
+    expect(await dialog(state({ primary: streamer, chat: chatState({ receive: { status: 'connected', delivery: 'confirmed' } }) }))).toContain('Check subscription');
+    // Nothing delivered yet: Retry renews the subscription, and says so.
+    expect(await dialog(state({ primary: streamer, chat: chatState({ receive: { status: 'connected' } }) }))).toContain('Renew subscription');
     expect(await dialog(state({ primary: streamer, chat: chatState({ receive: { status: 'disconnected' } }) }))).toContain('Check subscription');
     expect(await dialog(state({ primary: streamer, chat: chatState({ receive: { status: 'reconnecting' } }) }))).toContain('Retry');
     expect(await dialog(state({ primary: streamer, chat: chatState({ receive: { status: 'connecting' } }) }))).not.toMatch(/Retry|Check subscription/);
+  });
+
+  it('shows the no-chat warning on the card and in Live chat, with Renew subscription', async () => {
+    const warning = 'Your Kick stream is live, but nothing has reached CONDUIT from Kick chat for 12 minutes.';
+    const s = state({ primary: streamer, chat: chatState({ receive: { status: 'connected', delivery: 'confirmed', warning } }) });
+    expect(text(await card(s))).toContain(warning);
+    const t = await dialog(s);
+    expect(t).toContain(warning);
+    expect(t).toContain('Renew subscription');
+    expect(text(await card(state({ primary: streamer, chat: chatState({ receive: { status: 'connected', delivery: 'confirmed' } }) })))).not.toContain(
+      'nothing has reached CONDUIT',
+    );
   });
 
   it('lists recent messages as text (no HTML injection)', async () => {

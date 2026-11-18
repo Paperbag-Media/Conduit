@@ -13,31 +13,21 @@ describe('loadServerConfig', () => {
       logLevel: 'info',
       logToConsole: true,
       allowedOrigins: [APP_ORIGIN],
-      sessionTtlHours: 336,
-      sessionIdleHours: 168,
-      argon2MemoryKiB: 19_456,
-      argon2Passes: 2,
-      argon2Parallelism: 1,
       oauthCallbackPort: 47821,
       kickWebhookPort: 47822,
     });
-    expect(cfg.setupToken).toBeUndefined();
   });
 
-  it('refuses Argon2 parameters below the OWASP floor', () => {
-    expect(() => loadServerConfig({ CONDUIT_ARGON2_MEMORY_KIB: '4096' }, defaults)).toThrow(/CONDUIT_ARGON2_MEMORY_KIB/);
-    expect(() => loadServerConfig({ CONDUIT_ARGON2_PASSES: '1' }, defaults)).toThrow(/CONDUIT_ARGON2_PASSES/);
-    expect(loadServerConfig({ CONDUIT_ARGON2_MEMORY_KIB: '65536' }, defaults).argon2MemoryKiB).toBe(65_536);
-  });
-
-  it('requires the idle timeout not to exceed the session lifetime', () => {
-    expect(() => loadServerConfig({ CONDUIT_SESSION_TTL_HOURS: '24', CONDUIT_SESSION_IDLE_HOURS: '48' }, defaults)).toThrow(
-      /CONDUIT_SESSION_IDLE_HOURS/,
-    );
-  });
-
-  it('rejects a short setup token', () => {
-    expect(() => loadServerConfig({ CONDUIT_SETUP_TOKEN: 'short' }, defaults)).toThrow(/CONDUIT_SETUP_TOKEN/);
+  it('ignores the removed account settings, so an environment that still sets them starts as before', () => {
+    const old = {
+      CONDUIT_SETUP_TOKEN: 'short',
+      CONDUIT_SESSION_TTL_HOURS: '24',
+      CONDUIT_SESSION_IDLE_HOURS: '48',
+      CONDUIT_ARGON2_MEMORY_KIB: '4096',
+      CONDUIT_ARGON2_PASSES: '1',
+      CONDUIT_ARGON2_PARALLELISM: '99',
+    };
+    expect(loadServerConfig(old, defaults)).toEqual(loadServerConfig({}, defaults));
   });
 
   it('reads and coerces environment variables', () => {

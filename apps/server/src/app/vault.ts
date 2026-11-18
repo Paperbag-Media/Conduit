@@ -1,8 +1,7 @@
 /**
  * Credential vault as seen by the backend. Tokens are encrypted at rest by the desktop main process with Electron
- * safeStorage (Windows DPAPI); the backend reaches it over the private utility-process port. Without the desktop app
- * (standalone server) there is no OS-backed encryption, so platform connections are unavailable rather than stored
- * insecurely.
+ * safeStorage (Windows DPAPI); the backend reaches it over the private utility-process port. Without OS-backed
+ * encryption, platform connections are unavailable rather than stored insecurely.
  */
 import { VAULT_KEY_PATTERN, type SupervisorMessage, type VaultOperation, type WorkerMessage } from '@conduit/shared';
 
@@ -80,10 +79,9 @@ export class ParentPortVault implements CredentialVault {
   }
 }
 
-/** Standalone server: no OS-backed encryption, so nothing is ever stored. */
+/** No OS-backed encryption (the default when no vault is given): nothing is ever stored. */
 export class UnavailableVault implements CredentialVault {
-  private static readonly REASON =
-    'Secure credential storage needs the CONDUIT desktop app (Windows DPAPI). Platform connections are not available in the standalone server.';
+  private static readonly REASON = 'Secure credential storage (Windows DPAPI) isn’t available, so platform connections can’t be stored.';
   async unavailableReason(): Promise<string> {
     return UnavailableVault.REASON;
   }

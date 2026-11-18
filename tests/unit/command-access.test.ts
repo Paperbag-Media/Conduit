@@ -178,7 +178,7 @@ describe('migration 11 (permissions and cooldowns)', () => {
     db.prepare(
       "INSERT INTO chat_commands (id, platform, trigger, description, response, enabled, created_at, updated_at) VALUES ('k1', 'kick', '!english', NULL, 'Speak English please', 1, '2026-10-11T17:22:32Z', '2026-10-11T17:22:32Z')",
     ).run();
-    expect(migrate(db, migrations)).toEqual({ applied: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32], currentVersion: 32 });
+    expect(migrate(db, migrations)).toEqual({ applied: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33], currentVersion: 33 });
     expect(db.prepare('SELECT * FROM chat_commands').all()).toEqual([
       {
         id: 'k1',

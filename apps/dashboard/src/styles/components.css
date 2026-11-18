@@ -1201,3 +1201,10 @@ select.id-chips-add {
   flex: 1 1 320px;
   min-width: 0;
 }
+
+/* A tab that isn't built yet: gray, with its "Soon" tag, not clickable. */
+.platform-tab.tab-soon,
+.platform-tab.tab-soon:hover {
+  color: var(--faint);
+  cursor: default;
+}

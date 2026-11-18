@@ -148,6 +148,56 @@ describe('receiving: subscription lifecycle', () => {
     expect(kick.subscriptions).toHaveLength(0);
   });
 
+  it('Retry renews the subscriptions while Kick has delivered nothing; once chat arrives it only checks them', async () => {
+    await connect(kick.users.streamer);
+    await h.services.kickChat.start();
+    await until(chat, (x) => x.receive.status === 'connected');
+    const before = kick.subscriptions.map((s) => s.id);
+    expect(before).toHaveLength(3);
+    expect((await h.call('POST', '/api/kick/chat/retry')).status).toBe(200);
+    const renewed = kick.subscriptions.map((s) => s.id);
+    expect(kick.subscriptions.map((s) => s.event).sort()).toEqual(['channel.reward.redemption.updated', 'chat.message.sent', 'moderation.banned']);
+    expect(renewed.some((id) => before.includes(id))).toBe(false); // all three are new
+    expect((await chat()).receive).toMatchObject({ status: 'connected', delivery: 'unconfirmed' });
+    // A delivery proves the subscription works: Retry now keeps it.
+    expect(await deliverWebhook(kick, port, chatPayload({ content: 'hi', sender: kick.users.bot, broadcaster: kick.users.streamer }))).toBe(200);
+    await until(chat, (x) => x.receive.delivery === 'confirmed');
+    await h.call('POST', '/api/kick/chat/retry');
+    expect(kick.subscriptions.map((s) => s.id)).toEqual(renewed);
+  });
+
+  it('warns when the channel is live and Kick delivers nothing for 10 minutes; quiet when offline; clears on the next message', async () => {
+    await connect(kick.users.streamer);
+    await h.services.kickChat.start();
+    await until(chat, (x) => x.receive.status === 'connected');
+    const check = async () => {
+      await h.services.kickChat.checkDelivery();
+      return (await chat()).receive.warning;
+    };
+    // Offline: never a warning, however long it is quiet.
+    h.clock.advance(30 * 60_000);
+    expect(await check()).toBeNull();
+    // Live for an hour, but the subscription only became active 30 minutes ago and nothing has arrived since.
+    kick.live.set('retrolive', { startTime: new Date(h.clock.now().getTime() - 60 * 60_000).toISOString() });
+    const warning = await check();
+    expect(warning).toMatch(/Your Kick stream is live, but nothing has reached CONDUIT from Kick chat for 30 minutes/);
+    expect(warning).toContain('/kick/webhook');
+    expect(warning).toContain('Renew subscription');
+    // The 15-minute subscription re-check keeps the warning (it passes through "reconnecting").
+    await h.services.kickChat.ensure();
+    expect((await chat()).receive.warning).toBe(warning);
+    // Anything Kick delivers clears it at once, and the next check stays quiet.
+    expect(await deliverWebhook(kick, port, chatPayload({ content: 'back', sender: kick.users.bot, broadcaster: kick.users.streamer }))).toBe(200);
+    await until(chat, (x) => x.receive.warning === null);
+    expect(await check()).toBeNull();
+    // Quiet again for 10 minutes while live: it comes back, counting from the last delivery.
+    h.clock.advance(11 * 60_000);
+    expect(await check()).toMatch(/for 11 minutes/);
+    // Renewing the subscription starts the count again.
+    await h.call('POST', '/api/kick/chat/retry');
+    expect(await check()).toBeNull();
+  });
+
   it('disconnecting the main account removes its chat and redemption subscriptions', async () => {
     await connect(kick.users.streamer);
     await h.services.kickChat.start();

@@ -75,9 +75,34 @@ async function render(s: GiveawaysState) {
 }
 
 describe('Giveaways', () => {
-  it('is in the navigation as an available section', async () => {
+  it('has a page under Streaming and one under Discord', async () => {
     const { SECTIONS } = await import('../sections');
-    expect(SECTIONS.find((s) => s.id === 'giveaways')).toMatchObject({ label: 'Giveaways' });
+    expect(SECTIONS.find((s) => s.id === 'giveaways')).toMatchObject({ label: 'Giveaways', title: 'Stream Giveaways', group: 'streaming' });
+    expect(SECTIONS.find((s) => s.id === 'discord-giveaways')).toMatchObject({ label: 'Giveaways', title: 'Discord Giveaways', group: 'discord' });
+  });
+
+  it('each page lists only its own giveaways; Discord has no chat Messages tab', async () => {
+    const { GiveawaysView } = await import('../pages/community/GiveawaysPage');
+    const s = state([giveaway({ prize: 'Steam key', platforms: ['kick', 'twitch'] }), giveaway({ id: '22222222-2222-4222-8222-222222222222', prize: 'Nitro', platforms: ['discord'] })]);
+    const stream = text(renderToStaticMarkup(<GiveawaysView s={s} side="stream" />));
+    expect(stream).toContain('Steam key');
+    expect(stream).not.toContain('Nitro');
+    expect(stream).toContain('Messages 6');
+    const discord = text(renderToStaticMarkup(<GiveawaysView s={s} side="discord" />));
+    expect(discord).toContain('Nitro');
+    expect(discord).not.toContain('Steam key');
+    expect(discord).not.toContain('Messages');
+  });
+
+  it('the new-giveaway form fits its page: Kick/Twitch entry on Streaming, the announcement channel on Discord', async () => {
+    const { GiveawayEditor } = await import('../pages/community/GiveawaysPage');
+    const noop = () => {};
+    const stream = text(renderToStaticMarkup(<GiveawayEditor side="stream" initial={null} defaultChannel={null} kickRewards={null} onCancel={noop} onSaved={noop} />));
+    expect(stream).toMatch(/Entry on Kick Twitch/);
+    expect(stream).not.toMatch(/Discord/);
+    const discord = text(renderToStaticMarkup(<GiveawayEditor side="discord" initial={null} defaultChannel={null} kickRewards={null} onCancel={noop} onSaved={noop} />));
+    expect(discord).not.toMatch(/Entry on|Kick|Twitch|Subscribers/);
+    expect(discord).toContain('Start Giveaway');
   });
 
   it('two browser-style tabs, Giveaways and Messages; the Giveaways tab has the current one, then Completed (no hint at the bottom)', async () => {
@@ -172,7 +197,7 @@ describe('Giveaways', () => {
     const { GiveawayEditor } = await import('../pages/community/GiveawaysPage');
     const noop = () => {};
     const form = text(
-      renderToStaticMarkup(<GiveawayEditor initial={null} defaultChannel={null} kickRewards={{ available: true, problem: null }} onCancel={noop} onSaved={noop} />),
+      renderToStaticMarkup(<GiveawayEditor side="stream" initial={null} defaultChannel={null} kickRewards={{ available: true, problem: null }} onCancel={noop} onSaved={noop} />),
     );
     expect(form).toContain('Start Giveaway');
     expect(form).not.toMatch(/Save draft|Create giveaway/);
@@ -180,7 +205,7 @@ describe('Giveaways', () => {
     expect(form).toContain('Subscribers No multiplier 2× tickets');
     const unavailable = text(
       renderToStaticMarkup(
-        <GiveawayEditor initial={null} defaultChannel={null} kickRewards={{ available: false, problem: 'Select Reauthorize main account.' }} onCancel={noop} onSaved={noop} />,
+        <GiveawayEditor side="stream" initial={null} defaultChannel={null} kickRewards={{ available: false, problem: 'Select Reauthorize main account.' }} onCancel={noop} onSaved={noop} />,
       ),
     );
     expect(unavailable).toContain('Select Reauthorize main account.');
@@ -194,6 +219,7 @@ describe('Giveaways', () => {
     expect(checkGiveawayForm({ ...base, platforms: [] })).toHaveProperty('platforms');
     expect(checkGiveawayForm({ ...base, platforms: ['discord'] })).toHaveProperty('discordChannel');
     expect(checkGiveawayForm({ ...base, platforms: ['discord'], discordChannel: '42:5' })).toEqual({});
+    expect(checkGiveawayForm({ ...base, platforms: ['kick', 'discord'], discordChannel: '42:5' }).platforms).toMatch(/Discord giveaways are separate/);
     expect(checkGiveawayForm({ ...base, rewardEnabled: true, rewardTitle: 'Bonus', rewardCost: '0', rewardTickets: '1' })).toHaveProperty(['kickReward.cost']);
     expect(checkGiveawayForm({ ...base, rewardEnabled: true, rewardTitle: 'Bonus', rewardCost: '500', rewardTickets: '1', subscriberMultiplier: '2' })).toEqual({});
   });
@@ -204,7 +230,7 @@ describe('Kick chat messages (editable before sending)', () => {
     const t = await render(state([]));
     for (const label of ['Giveaway started', 'Viewer entered', 'Entries closed', 'Winners drawn', 'Winner redrawn', 'Entry after closing']) expect(t).toContain(label);
     expect(t).toContain('Preview: viewer123 has entered the giveaway!');
-    expect(t).toContain('Preview: 🏆 Winners of Steam gift card: @viewer123, fan (Discord). Congratulations!');
+    expect(t).toContain('Preview: 🏆 Winners of Steam gift card: @viewer123, @viewer456. Congratulations!');
     expect(t).toContain('Save messages');
     expect(t).toContain('Available variables');
     expect(t).not.toMatch(/Reset to default|Custom|Unsaved/); // all defaults, nothing changed
@@ -228,7 +254,7 @@ describe('Kick chat messages (editable before sending)', () => {
     const { previewKickGiveawayMessage } = await import('../components/kick/KickGiveawayMessages');
     expect(previewKickGiveawayMessage('closedReply', 'Too late, entries are closed.')).toBe('Too late, entries are closed.');
     expect(previewKickGiveawayMessage('started', KICK_GIVEAWAY_MESSAGE_DEFAULTS.started)).toBe(
-      '🎉 I’ve started a giveaway for Steam gift card! To enter, type !enter in chat or click Enter Giveaway on the Discord announcement. 2 winners. Redeem “Bonus ticket” with Channel Points for bonus tickets. Entries close in 10 minutes.',
+      '🎉 I’ve started a giveaway for Steam gift card! To enter, type !enter in chat. 2 winners. Redeem “Bonus ticket” with Channel Points for bonus tickets. Entries close in 10 minutes.',
     );
   });
 });

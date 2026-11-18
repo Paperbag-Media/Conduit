@@ -2,9 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { discordRepo, type Database } from '@conduit/database';
 import type { Logger } from '@conduit/logger';
-import type { PasswordHasher } from '@conduit/security';
 import { GIVEAWAY_ENTER, renderCommand, type ServerConfig } from '@conduit/shared';
-import { EventBus } from '../events';
 import { AlertService } from '../app/alert-service';
 import { AppearanceService } from '../app/appearance-service';
 import { DiscordCommandAccessService } from '../discord/discord-command-access-service';
@@ -23,7 +21,7 @@ import { KickCredentials } from '../kick/kick-credentials';
 import { createAdapters, type Adapters } from '../app/registry';
 import type { FetchLike } from '../app/types';
 import { UnavailableVault, type CredentialVault } from '../app/vault';
-import { AuthService } from '../app/auth-service';
+
 import { ConnectionService } from '../app/connection-service';
 import { channelCommands, COMMANDS, moderationCommands, stickyCommands, type SlashCommand } from '../discord/commands';
 import { customSlashCommand } from '../discord/commands/custom';
@@ -57,11 +55,9 @@ import { TwitchDefaultCommandService } from '../twitch/twitch-default-commands';
 import { KickClipService } from '../kick/kick-clip-service';
 import { KickClipsApi } from '../kick/kick-clips-api';
 import { TimedMessageService } from '../community/timed-message-service';
-import { ProfileService } from '../app/profile-service';
-import { UserAdminService } from '../app/user-admin-service';
+
 
 export interface Services {
-  events: EventBus;
   /** Pop-up alerts for the dashboard (rate limits, accounts going down or coming back). */
   alerts: AlertService;
   connections: ConnectionService;
@@ -102,19 +98,12 @@ export interface Services {
   protection: DiscordProtectionService;
   /** Discord → Embed Creator: messages sent as the bot and edited later. */
   embedCreator: EmbedCreatorService;
-  // Account services: dormant on the desktop since Phase 2.3 (no CONDUIT sign-in); retained for future
-  // multi-user/remote access.
-  auth: AuthService;
-  profiles: ProfileService;
-  users: UserAdminService;
 }
 
 export function createServices(opts: {
   db: Database;
-  config: Pick<ServerConfig, 'sessionTtlHours' | 'sessionIdleHours' | 'oauthCallbackPort'> & Partial<Pick<ServerConfig, 'kickWebhookPort' | 'dataDir'>>;
-  hasher: PasswordHasher;
+  config: Pick<ServerConfig, 'oauthCallbackPort'> & Partial<Pick<ServerConfig, 'kickWebhookPort' | 'dataDir'>>;
   logger: Logger;
-  setupToken: string;
   /** Used in the User-Agent of platform API calls. */
   version?: string;
   /** Platform OAuth adapters. Defaults to the real ones (integrations/registry.ts) using `fetch`. */
@@ -133,8 +122,7 @@ export function createServices(opts: {
   sleep?: (ms: number) => Promise<void>;
   /** Random numbers 0 ≤ n < 1 (Loyalty XP amounts; tests make them predictable). */
   random?: () => number;
-  /** Minimum time between giveaway embed count edits on Discord (tests shorten it). */
-  giveawayEditIntervalMs?: number;
+
   /** Encrypted credential storage. Defaults to "unavailable" (no OS-backed encryption, nothing is stored). */
   vault?: CredentialVault;
   now?: () => Date;
@@ -142,19 +130,6 @@ export function createServices(opts: {
   requestRestart?: () => void;
 }): Services {
   const now = opts.now ?? (() => new Date());
-  const events = new EventBus();
-  const hour = 60 * 60_000;
-  const auth = new AuthService({
-    db: opts.db,
-    hasher: opts.hasher,
-    events,
-    logger: opts.logger,
-    now,
-    sessionTtlMs: opts.config.sessionTtlHours * hour,
-    sessionIdleMs: opts.config.sessionIdleHours * hour,
-    setupToken: opts.setupToken,
-  });
-  auth.restoreFailureWindows();
   const version = opts.version ?? '0.0.0';
   const vault = opts.vault ?? new UnavailableVault();
   const discordCredentials = new DiscordCredentials(opts.db, vault);
@@ -363,7 +338,7 @@ export function createServices(opts: {
       return { ready: true, note: null };
     },
     sleep: opts.sleep,
-    discordEditIntervalMs: opts.giveawayEditIntervalMs,
+
     discordApplicationId: () => discordCredentials.applicationId(),
     discord: discordGiveaways,
   });
@@ -644,7 +619,6 @@ export function createServices(opts: {
     if (platform === 'discord') void discord!.refreshCommands();
   });
   return {
-    events,
     alerts,
     connections,
     discord,
@@ -681,8 +655,5 @@ export function createServices(opts: {
     presence,
     protection,
     embedCreator,
-    auth,
-    profiles: new ProfileService(opts.db, events, now),
-    users: new UserAdminService(opts.db, opts.hasher, events, now, (username) => auth.clearLoginFailures(username)),
   };
 }

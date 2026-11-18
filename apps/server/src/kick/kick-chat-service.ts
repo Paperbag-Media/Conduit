@@ -46,6 +46,10 @@ const RETRY_DELAYS_S = [30, 120, 600];
 const RECHECK_MS = 15 * 60_000;
 /** Kick documents no chat rate limit; space out manual sends so a double click can't post twice. */
 const MIN_SEND_INTERVAL_MS = 2000;
+/** While connected, how often to ask Kick whether the main channel is live (only when nothing has arrived lately). */
+const LIVE_CHECK_MS = 2 * 60_000;
+/** Live this long with nothing delivered by Kick (chat, bans or redemptions): warn that chat isn't reaching CONDUIT. */
+const NO_DELIVERY_WARNING_MS = 10 * 60_000;
 
 /** The outcome of a send, for callers that must not throw (e.g. command replies from the chat handler). */
 export type KickSendOutcome =
@@ -97,6 +101,15 @@ export class KickChatService {
   private again = false;
   private retryTimer: NodeJS.Timeout | null = null;
   private recheckTimer: NodeJS.Timeout | null = null;
+  private liveCheckTimer: NodeJS.Timeout | null = null;
+  /** The next subscription pass replaces CONDUIT's subscriptions with new ones (Retry while nothing arrives). */
+  private renewNext = false;
+  /** When the subscription last became active (or was renewed); the no-delivery warning counts from here at most. */
+  private activeSince: number | null = null;
+  /** When Kick last delivered any signed event (chat, ban, redemption), in ms. */
+  private lastDeliveryAt: number | null = null;
+  /** Set while the main channel is live and Kick has delivered nothing for a while. */
+  private deliveryWarning: string | null = null;
   private nextRetryAt: number | null = null;
   private retries = 0;
   private lastSendAt = 0;
@@ -111,7 +124,12 @@ export class KickChatService {
       port: o.webhookPort,
       logger: o.logger.child({ module: 'kick-webhook' }),
       fetchPublicKey: () => o.api.publicKey(),
-      onEvent: (e) => this.handleEvent(e),
+      onEvent: (e) => {
+        // Any signed delivery proves the tunnel and the webhook URL work.
+        this.lastDeliveryAt = this.o.now().getTime();
+        this.deliveryWarning = null;
+        this.handleEvent(e);
+      },
       onRejected: () => {
         this.rejected++;
       },
@@ -271,7 +289,17 @@ export class KickChatService {
     await this.server.close();
   }
 
-  /** The Retry action, and the reaction to (re)authorization. One pass at a time; a request during a pass reruns it. */
+  /**
+   * The Retry action. While Kick hasn't delivered anything (this run, or lately while live), CONDUIT's subscriptions
+   * are deleted and created again: Kick drops a subscription whose deliveries keep failing, and a fresh one is the
+   * only way to be sure it delivers to the webhook URL set in the Kick app now. Otherwise it only checks them.
+   */
+  retry(): Promise<void> {
+    if (this.delivery === 'unconfirmed' || this.deliveryWarning) this.renewNext = true;
+    return this.ensure();
+  }
+
+  /** The reaction to (re)authorization, and the periodic check. One pass at a time; a request during a pass reruns it. */
   ensure(): Promise<void> {
     if (this.closed || !this.started) return Promise.resolve();
     if (this.running) {
@@ -309,12 +337,30 @@ export class KickChatService {
     this.set(this.status === 'connected' || this.status === 'reconnecting' ? 'reconnecting' : 'connecting', null);
 
     let auth = await this.o.connections.accessToken('kick', 'primary');
+    let renew = this.renewNext;
+    this.renewNext = false;
     for (let attempt = 0; ; attempt++) {
       if (!auth) {
         this.subscriptionId = null;
         return this.set('error', `Kick no longer accepts ${primary.accountName}'s authorization. Reconnect the main account.`);
       }
       try {
+        if (renew) {
+          // Delete CONDUIT's chat, redemption and ban subscriptions for this channel; they are created again below.
+          const ours = (await this.o.api.listSubscriptions(auth.token)).filter(
+            (s) =>
+              [CHAT_EVENT, REDEMPTION_EVENT, BAN_EVENT].some((e) => s.event === e.name && s.version === e.version) &&
+              (s.broadcasterUserId === null || s.broadcasterUserId === primary.externalAccountId),
+          );
+          await this.o.api.deleteSubscriptions(
+            auth.token,
+            ours.map((s) => s.id),
+          );
+          renew = false;
+          this.subscriptionId = this.redemptionSubscriptionId = this.banSubscriptionId = null;
+          this.activeSince = null;
+          this.o.logger.info('kick subscriptions renewed', { removed: ours.length });
+        }
         const existing = (await this.o.api.listSubscriptions(auth.token)).filter(
           (s) =>
             s.event === CHAT_EVENT.name &&
@@ -336,9 +382,11 @@ export class KickChatService {
         await this.ensureBanSubscription(auth.token, primary);
         this.retries = 0;
         this.set('connected', null);
+        this.activeSince ??= this.o.now().getTime();
         this.o.logger.info('kick chat subscription active', { reused: existing.length > 0 });
         this.recheckTimer = setTimeout(() => void this.ensure(), RECHECK_MS);
         this.recheckTimer.unref();
+        this.scheduleDeliveryCheck();
         return;
       } catch (err) {
         if (err instanceof KickApiError && err.kind === 'unauthorized' && attempt === 0) {
@@ -450,14 +498,70 @@ export class KickChatService {
   private clearTimers(): void {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.recheckTimer) clearTimeout(this.recheckTimer);
+    if (this.liveCheckTimer) clearTimeout(this.liveCheckTimer);
     this.retryTimer = null;
     this.recheckTimer = null;
+    this.liveCheckTimer = null;
     this.nextRetryAt = null;
   }
 
   private set(status: KickChatReceiveStatus, problem: string | null): void {
     this.status = status;
     this.problem = problem;
+    // The periodic re-check passes through 'reconnecting'; only a real loss of the subscription resets the warning.
+    if (status !== 'connected' && status !== 'reconnecting') {
+      this.deliveryWarning = null;
+      this.activeSince = null;
+    }
+  }
+
+  private scheduleDeliveryCheck(): void {
+    if (this.liveCheckTimer) clearTimeout(this.liveCheckTimer);
+    this.liveCheckTimer = setTimeout(() => void this.checkDelivery(), LIVE_CHECK_MS);
+    this.liveCheckTimer.unref();
+  }
+
+  /**
+   * Notices when Kick isn't delivering chat: the subscription can look fine while the tunnel is down or the Kick app
+   * points elsewhere. Asks Kick whether the main channel is live (only when nothing has arrived for a while) and warns
+   * when it has been live for NO_DELIVERY_WARNING_MS with nothing delivered. Never throws; runs again on its timer.
+   */
+  async checkDelivery(): Promise<void> {
+    this.liveCheckTimer = null;
+    try {
+      if (this.closed || this.status !== 'connected') return;
+      const now = this.o.now().getTime();
+      if (this.lastDeliveryAt !== null && now - this.lastDeliveryAt < NO_DELIVERY_WARNING_MS) {
+        this.deliveryWarning = null;
+        return;
+      }
+      const slug = this.primaryRecord()?.accountHandle;
+      if (!slug) return;
+      const [channel] = await this.withPrimaryToken((t) => this.o.api.channelsBySlugs(t, [slug.toLowerCase()]));
+      const startedAt = channel?.live && channel.startTime ? Date.parse(channel.startTime) : NaN;
+      if (this.status !== 'connected') return;
+      if (!Number.isFinite(startedAt)) {
+        this.deliveryWarning = null;
+        return;
+      }
+      // Counted from the latest of: the stream starting, the subscription becoming active, the last delivery.
+      const quietSince = Math.max(startedAt, this.activeSince ?? now, this.lastDeliveryAt ?? 0);
+      const minutes = Math.floor((now - quietSince) / 60_000);
+      if (now - quietSince < NO_DELIVERY_WARNING_MS) {
+        this.deliveryWarning = null;
+        return;
+      }
+      if (!this.deliveryWarning) this.o.logger.warn('kick chat not arriving while live', { minutes });
+      this.deliveryWarning =
+        `Your Kick stream is live, but nothing has reached CONDUIT from Kick chat for ${minutes} minutes. If people are ` +
+        `chatting, check that your tunnel is running and that the webhook URL in your Kick app ends in ${KICK_WEBHOOK_PATH}, ` +
+        `then select Renew subscription (Manage → Live chat).`;
+    } catch (err) {
+      // Kick unreachable or the account's token refused: keep the previous state and try again next time.
+      this.o.logger.info('kick live check failed', { kind: err instanceof KickApiError ? err.kind : 'unknown' });
+    } finally {
+      if (!this.closed && this.status === 'connected' && !this.liveCheckTimer) this.scheduleDeliveryCheck();
+    }
   }
 
   // ── receiving ─────────────────────────────────────────────────────────────
@@ -700,6 +804,7 @@ export class KickChatService {
         status: this.status,
         delivery: this.delivery,
         problem: this.problem,
+        warning: this.status === 'connected' ? this.deliveryWarning : null,
         localTarget: `http://127.0.0.1:${this.server.port}`,
         webhookPath: KICK_WEBHOOK_PATH,
         lastEventAt: this.lastEventAt,

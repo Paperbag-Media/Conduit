@@ -46,6 +46,8 @@ import {
   EDITABLE_FIELDS,
   GIVEAWAY_BUTTONS,
   GIVEAWAY_ENTER,
+  GIVEAWAY_SIDES_SEPARATE,
+  giveawaySide,
   KICK_CHAT_MAX_CHARS,
   KICK_GIVEAWAY_MESSAGE_DEFAULTS,
   KICK_GIVEAWAY_MESSAGE_KINDS,
@@ -147,8 +149,7 @@ export interface GiveawayServiceOptions {
   discord?: DiscordGiveaways;
   /** The configured Discord application; button clicks for any other application are refused. */
   discordApplicationId?: () => string | null;
-  /** Kept for compatibility with callers; the embed no longer shows counts, so nothing is throttled any more. */
-  discordEditIntervalMs?: number;
+
   /** How often pending redemptions are fetched from Kick (default 30 s). */
   rewardPollMs?: number;
 }
@@ -360,7 +361,7 @@ export class GiveawayService {
   async createAndStart(raw: unknown): Promise<GiveawayView> {
     const input = this.parseCreate(raw);
     this.closeOverdue();
-    const open = giveawaysRepo.findOpen(this.o.db);
+    const open = giveawaysRepo.findOpen(this.o.db, giveawaySide(input.platforms));
     if (open) throw conflict(`“${open.prize}” is still running. End or cancel it before starting another giveaway.`);
     let channelName: string | null = null;
     if (input.platforms.includes('kick') && !connectionsRepo.listForRole(this.o.db, 'kick', 'primary').some((r) => r.status === 'connected'))
@@ -479,6 +480,12 @@ export class GiveawayService {
       });
     }
     const platforms = input.platforms;
+    if (platforms && giveawaySide(platforms) !== giveawaySide(platformsOf(existing))) {
+      throw new AppError('validation_error', 'Some fields are invalid', { issues: [{ path: 'platforms', message: GIVEAWAY_SIDES_SEPARATE }] });
+    }
+    if (platforms?.includes('discord') && giveawaySide(platforms) === 'stream' && !existing.allowDiscord) {
+      throw new AppError('validation_error', 'Some fields are invalid', { issues: [{ path: 'platforms', message: GIVEAWAY_SIDES_SEPARATE }] });
+    }
     const allowDiscord = platforms ? platforms.includes('discord') : existing.allowDiscord;
     const current: DiscordChannelRef =
       existing.discordGuildId && existing.discordChannelId ? { guildId: existing.discordGuildId, channelId: existing.discordChannelId } : null;
@@ -531,7 +538,7 @@ export class GiveawayService {
     const g = this.require(id);
     if (g.status !== 'draft') throw conflict(`Only a draft can be started; this giveaway is ${g.status}.`);
     this.closeOverdue();
-    const open = giveawaysRepo.findOpen(this.o.db);
+    const open = giveawaysRepo.findOpen(this.o.db, giveawaySide(platformsOf(g)));
     if (open) throw conflict(`“${open.prize}” is still running. End or cancel it before starting another giveaway.`);
     const now = this.o.now();
     const endsAt = g.durationMinutes === null ? null : new Date(now.getTime() + g.durationMinutes * 60_000).toISOString();
@@ -745,16 +752,20 @@ export class GiveawayService {
   /**
    * One entry attempt from a platform. The caller has verified the user's identity with the platform (signed Kick
    * event, Twitch EventSub, Discord interaction). Idempotent: entering again changes nothing. `subscriber`: evidence
-   * from the chat event that the entrant is an active subscriber right now (evaluated once, at entry).
+   * from the chat event that the entrant is an active subscriber right now (evaluated once, at entry). `giveawayId`: the
+   * giveaway whose button was clicked (Discord); without it, chat enters the open stream giveaway and Discord the open
+   * Discord giveaway.
    */
   enter(
     platform: GiveawayPlatform,
     user: { id: string; name: string },
     source: EntrySource = platform === 'discord' ? 'command' : 'chat',
     subscriber: { messageId: string } | null = null,
+    giveawayId?: string,
   ): EntryResult {
     this.closeOverdue();
-    const g = giveawaysRepo.findOpen(this.o.db);
+    const found = giveawayId !== undefined ? giveawaysRepo.get(this.o.db, giveawayId) : giveawaysRepo.findOpen(this.o.db, platform === 'discord' ? 'discord' : 'stream');
+    const g = found?.status === 'open' ? found : undefined;
     if (!g) return { outcome: 'no_giveaway' };
     if (g.endsAt !== null && Date.parse(g.endsAt) <= this.o.now().getTime()) return { outcome: 'closed', prize: g.prize };
     const platforms = platformsOf(g);
@@ -1144,7 +1155,7 @@ export class GiveawayService {
     if (!current || current.status !== 'open' || (current.endsAt !== null && Date.parse(current.endsAt) <= this.o.now().getTime()))
       return R.closed;
 
-    const result = this.enter('discord', { id: i.userId, name: i.userName }, 'command');
+    const result = this.enter('discord', { id: i.userId, name: i.userName }, 'command', null, g.id);
     this.o.logger.info('giveaway button', { giveawayId: g.id, outcome: result.outcome });
     switch (result.outcome) {
       case 'entered':

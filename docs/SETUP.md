@@ -27,7 +27,7 @@ CONDUIT builds NSIS installers, not Squirrel.
 | --- | --- | --- |
 | Development | `npm run dev` | `.devdata/` in the repository |
 | Built app | `npm run build` then `npm start` | `%APPDATA%\CONDUIT` |
-| Standalone server | `npm run build` then `npm run server` | `%APPDATA%\CONDUIT` |
+
 | Installed app | Start menu → CONDUIT | `%APPDATA%\CONDUIT` |
 
 `npm run dev` starts the Vite dev server on `http://127.0.0.1:5173`, watches the main, preload and server bundles,
@@ -38,12 +38,9 @@ this safe, but you won't see "stopped" log lines for those restarts.
 Inside the data directory:
 
 - `conduit.db` (plus `-wal`/`-shm`): the SQLite database.
-- `session.bin`: your desktop session, encrypted with Windows DPAPI. Deleting it signs you out.
-- `server.lock`: present while the backend is running; the recovery tool uses it to refuse to run concurrently.
 - `logs/desktop.log` and `logs/server.log`: JSON-lines logs, rotated at 5 MiB, 5 files kept
 
-Existing databases are migrated automatically at startup. Upgrading from Phase 1 adds the account tables and keeps
-existing data.
+Existing databases are migrated automatically at startup, keeping existing data.
 
 Electron also keeps its own browser cache (folders such as `Cache` and `GPUCache`) and the key that protects stored
 credentials (`Local State`) in `%APPDATA%\CONDUIT`, even when `CONDUIT_DATA_DIR` points elsewhere. Don't delete that
@@ -186,7 +183,7 @@ Kick also works with **your own** Kick app; there is no shared CONDUIT app. Sele
 The setup window uses the same step-by-step layout as Discord's, with Kick's own four steps — **Kick App**, **Your
 Account**, **Chatbot**, **Live Chat** — and opens at the first one that isn't done. The Kick card shows **Connected**
 when your main account's authorization is valid, **Connecting** (yellow) while you approve in the browser or while live
-chat is still connecting, **Needs Reconnect** when Kick rejected it, and **Not Connected** otherwise. Chat status is shown in the Live Chat step and on Kick Moderation (not on the card).
+chat is still connecting, **Needs Reconnect** when Kick rejected it, and **Not Connected** otherwise. Chat status is shown in the Live Chat step and on Streaming → Moderation → Kick (not on the card).
 
 ### 1. Kick App (once)
 
@@ -250,6 +247,11 @@ anything else. You expose that one address with a tunnel:
   waiting to confirm your tunnel.
 - **Permission required:** reauthorize the main account.
 - **Reconnecting / Error:** Kick couldn't be reached or refused; use **Retry**.
+- **Nothing arriving while you're live:** if your Kick stream has been live for 10 minutes and Kick has delivered
+  nothing (no chat, bans or redemptions), the Kick card and Live chat say so. Check that the tunnel is running and that
+  the webhook URL ends in `/kick/webhook`, then select **Renew subscription**. While nothing has arrived, that button
+  deletes CONDUIT's Kick subscriptions and creates new ones: Kick drops a subscription whose deliveries keep failing.
+  Once a message arrives it reads **Check subscription** again and keeps them.
 
 **Sending.** **Send a test message** posts exactly what you type, only when you select **Send to live chat**, as the
 account shown (the bot account or your main account) to your channel. CONDUIT says "sent" only after Kick confirms
@@ -337,7 +339,8 @@ Twitch commands are managed on the **Commands** page; see [Commands](#commands).
 
 ## Commands
 
-**Commands** in the sidebar holds every command, with a tab each for **Discord**, **Kick** and **Twitch**.
+There are two **Commands** pages: **Discord → Commands** holds the bot's slash commands, and **Streaming → Commands**
+holds the chat commands, with a tab each for **Kick** and **Twitch** (**YouTube** is marked *Soon*).
 
 **Twitch** commands work like Kick's: a `!trigger`, a one-line reply of up to 500 characters, permissions and cooldowns. **Moderators** means Twitch's moderator badge (or lead moderator).
 **Subscribers** means the subscriber or founder badge. Replies post as the Twitch chatbot account; CONDUIT never
@@ -512,11 +515,15 @@ Examples: `Hello {user}, welcome to {channel}!` · `!so` → `Go follow {args} a
 
 ## Giveaways
 
-Open **Giveaways** in the sidebar. It has two browser-style tabs:
-- **Giveaways:** **New giveaway** (top right), the **Current giveaway** (running, or entries closed and waiting for the
-  draw) and **Completed** giveaways, one line each (prize, when, entries, winners), 5 to a page. Select one to open its
-  winners, completion time and draw history.
-- **Messages:** the chat messages described below.
+Discord giveaways and stream giveaways are separate, and one of each can run at the same time:
+- **Streaming → Giveaways:** viewers enter from Kick or Twitch chat with `!enter`. It has two browser-style tabs:
+  **Giveaways** and **Messages** (the chat messages described below).
+- **Discord → Giveaways:** members enter with the **Enter Giveaway** button on the giveaway's post.
+
+Each page has **New giveaway** (top right), the **Current giveaway** (running, or entries closed and waiting for the
+draw) and **Completed** giveaways, one line each (prize, when, entries, winners), 5 to a page. Select one to open its
+winners, completion time and draw history. Giveaways from before 1.7.0 that allowed Discord and chat entry together are
+listed under Streaming.
 
 ### Start a giveaway
 
@@ -526,14 +533,14 @@ error says what to fix.
 
 - **Prize**, optional **description**, **winners** (1–50) and an optional **duration** (1 minute to 7 days; empty =
   until you end entries).
-- **Entry on** Kick, Twitch, Discord or any mix. Kick and Twitch need your main account there connected; Discord needs a
-  **Discord announcement channel** (the last one is preselected; channels where the bot lacks a permission are disabled and say
-  which one). Start checks the bot's access to that channel.
+- **Stream giveaways: Entry on** Kick, Twitch or both. Each needs your main account there connected.
+- **Discord giveaways:** the **Discord announcement channel** (the last one is preselected; channels where the bot lacks
+  a permission are disabled and say which one). Start checks the bot's access to that channel.
 - **Kick bonus tickets (optional):** a **Channel Points reward** (name, cost in points, bonus tickets per redemption).
 - **Subscribers (optional, Kick and Twitch):** an **active-subscriber multiplier** (2×–5×). See *Tickets* below.
 
-Only one giveaway runs at a time. While it runs you can still change the prize, description and number of winners
-(**Edit**).
+One stream giveaway and one Discord giveaway can run at a time. While one runs you can still change the prize,
+description and number of winners (**Edit**).
 
 ### How viewers enter
 
@@ -545,9 +552,9 @@ Only one giveaway runs at a time. While it runs you can still change the prize, 
 - **Discord:** click **🎉 Enter Giveaway** on the giveaway's embed. Entering is one-way: there is no leave option. The
   answer is private to the person clicking ("You've entered the giveaway! 🎉", "You're already entered in this
   giveaway!", "This giveaway is closed. Entries are no longer accepted."). Nothing is posted publicly or sent by DM.
-  The embed explains the Discord button only; chat viewers learn about `!enter` from the chat announcement.
+  This is for Discord giveaways only; `!enter` in chat always enters the running stream giveaway.
 
-Each account enters once, identified by its platform user ID (never by name). The same person on two platforms counts as
+Each account enters once, identified by its platform user ID (never by name). The same person on Kick and Twitch counts as
 two entrants (accounts aren't linked). Your own accounts and the chatbots can't enter.
 
 ### Chat messages
@@ -629,8 +636,8 @@ includes them; winner announcements show the winner's name and the prize only.
 
 ## Moderation
 
-**Kick Moderation** (sidebar → Kick), **Twitch Moderation** (sidebar → Twitch) and **Discord Bot** (sidebar → Discord: tabs
-**Settings**, **Protection**, **Logs**); YouTube is marked *Soon* (planned, not connected, no permissions requested). None
+**Streaming → Moderation** (a tab each for **Kick** and **Twitch**; **YouTube** is marked *Soon*: planned, not connected,
+no permissions requested) and **Discord → Discord Bot** (tabs **Settings**, **Protection**, **Logs**). None
 of these pages has buttons to act on a person: actions happen through **automated protection** (Kick, Twitch) and
 **moderation commands**. The pages configure protection and show what happened.
 
@@ -827,10 +834,11 @@ both logs, select a name for that person's history.
 
 ## Navigation
 
-The sidebar starts with Dashboard, Commands, Giveaways and Timed Messages, then is organised by platform: **Discord**
-(Discord Bot, with its Settings, Protection and Logs tabs; Sticky Messages; Embed Creator; Loyalty & Rewards), **Kick**
-(Kick Moderation, Kick Notifications, Clips), **Twitch** (Twitch Notifications, Twitch Moderation), **YouTube** (*Soon*)
-and **OBS Overlays** (*Soon*). Each platform heading folds its group.
+The sidebar starts with the Dashboard, then has two groups. **Discord**: Discord Bot (Settings, Protection and Logs
+tabs), Commands, Embed Creator, Auto Messages (Sticky and Timed tabs), Giveaways, Loyalty & Rewards. **Streaming**:
+Commands, Moderation, Notifications, Clips, Timed Messages, Giveaways; each has a tab per platform (Kick, Twitch, and
+YouTube marked *Soon*). **Widgets** (*Soon*) comes after them. Each group heading folds its group, and each page
+remembers the tab you last opened.
 Pinned to the bottom of the sidebar (always visible): **Settings** and "Made by Retronix". Settings shows About CONDUIT
 (version, release channel, build), **Backup & Restore**, **Logs** and the release notes (see [Settings](#settings)).
 *Soon* items are gray and can't be opened. Each page's main actions (**New…**, **Add streamer**) sit at the top right,
@@ -867,8 +875,9 @@ warnings after ten, errors stay until closed. The same alert isn't repeated with
 
 ## Timed Messages
 
-**Overview → Timed Messages**: a message repeated in your **Kick chat** or **Twitch chat** (as the chatbot, one line of
-text — neither chat has embeds) or in a **Discord channel** (text and/or an embed). Each one can post:
+**Streaming → Timed Messages** (Kick and Twitch tabs) repeats a message in your **Kick chat** or **Twitch chat** (as the
+chatbot, one line of text — neither chat has embeds). **Discord → Auto Messages → Timed** repeats one in a **Discord
+channel** (text and/or an embed). Each one can post:
 
 - **every X minutes** (5–1440): the clock starts when it's switched on (nothing is posted at that moment) and restarts
   after each post;
@@ -960,7 +969,7 @@ select menu (**+ Select Menu**, up to 25 options).
 
 ## Discord Sticky Messages
 
-**Discord → Sticky Messages** keeps a message at the bottom of a channel (one sticky per channel). Discord can't pin a
+**Discord → Auto Messages → Sticky** keeps a message at the bottom of a channel (one sticky per channel). Discord can't pin a
 message to the bottom, so when people post, the bot posts a new copy and deletes the previous one — **each repost is a
 new Discord message**.
 
@@ -998,7 +1007,7 @@ off, the category that needs it says which to turn on.
 
 ## Kick Notifications
 
-**Kick → Kick Notifications** posts in Discord when a Kick streamer goes live — your channel or anyone's.
+**Streaming → Notifications → Kick** posts in Discord when a Kick streamer goes live — your channel or anyone's.
 
 - **Add streamer:** a Kick channel name or kick.com link (CONDUIT checks it exists) and the Discord channel.
 - **The post** (by default, the Retronix layout): *@Role Live now! {streamer} is streaming on Kick!* above an embed
@@ -1033,7 +1042,7 @@ off, the category that needs it says which to turn on.
 
 ## Twitch Notifications
 
-**Twitch → Twitch Notifications** posts in Discord when a Twitch streamer goes live — your channel or anyone's. It works
+**Streaming → Notifications → Twitch** posts in Discord when a Twitch streamer goes live — your channel or anyone's. It works
 just like [Kick Notifications](#kick-notifications) (the post, layout, role, preview, **Send test**, one post per
 stream, deleting the post when the stream ends). The differences:
 
@@ -1050,7 +1059,7 @@ stream, deleting the post when the stream ends). The differences:
 
 ## Kick Clips
 
-**Kick → Clips** lists the clips of your channel (the main Kick account), made by anyone on kick.com (for example with
+**Streaming → Clips → Kick** lists the clips of your channel (the main Kick account), made by anyone on kick.com (for example with
 Kick's own `/clip` in chat), newest first.
 Kick's official API has no clips yet, so the list comes from Kick's website (public data, no login); if Kick changes or
 blocks it, the page says so and the clips already listed stay. The list is read when the page is open (at most once a
@@ -1114,79 +1123,12 @@ secrets are ever shown. The Discord bot is managed from **Dashboard → Discord 
 The general workflow builder was replaced by the dedicated Timed Messages and Stream Notifications. Its database tables
 (`automations`, `automation_runs`) and any saved rows are kept untouched; nothing runs them any more.
 
-## Accounts (dormant)
+## Retired: Accounts (Phase 2)
 
-CONDUIT user accounts, streamer-profile membership and the account administration screens were part of Phase 2.
-They are **not used** by the desktop app since Phase 2.3. The tables and server code are kept for future remote or
-multi-streamer support. The recovery and rate-limit sections
-below apply only to that dormant account system.
-
-## Administrator password recovery (dormant account system)
-
-This replaces a locked-out **administrator's** password with a generated temporary password. It works only on the
-PC that hosts CONDUIT, and only while CONDUIT is closed. There is no network endpoint for it.
-
-**Prerequisites**
-- You are signed in to Windows as the user who runs CONDUIT. The tool reads and writes that user's data folder.
-- CONDUIT is **closed**: every window, so the backend has stopped.
-- You know the administrator's **username**.
-
-**Installed app.** Open PowerShell and run (adjust the path if you installed elsewhere):
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\CONDUIT\CONDUIT.exe" --recover-admin --username <admin-username> --confirm | Out-Host
-```
-
-A dialog shows the result and the temporary password. The same text is printed to the console; `| Out-Host` makes
-PowerShell wait for and show it.
-
-**Development or standalone-server installs:**
-
-```powershell
-npm run build
-npm run recover-admin -- --username <admin-username> --confirm
-# optional: --data-dir <folder> to target a specific data folder (defaults to the same folder CONDUIT uses)
-```
-
-**What it does**, in one database transaction:
-1. Sets a new, randomly generated temporary password (25 characters, about 125 bits), stored only as an Argon2id hash.
-2. Signs the administrator out of **every** session.
-3. Writes an audit record (`user.password_recovered`, method `local_recovery_tool`).
-
-It also clears the account's failed-login lockout.
-
-**What it refuses to do**
-- Run without `--confirm`, or accept a password on the command line (which would end up in shell history).
-- Reset a non-administrator. Administrators reset those from User Accounts.
-- Reset a disabled account.
-- Run while CONDUIT is open.
-- Touch a database that fails its integrity check, or one whose schema version doesn't match this CONDUIT build.
-
-**After recovery**
-1. Start CONDUIT. It shows "Your session ended". Sign in with the temporary password.
-2. CONDUIT shows **"Choose a new password"** instead of the app. Enter the temporary password and a new password
-   of your own; it must be different. Until you do, nothing else is available, not even through the API. You can
-   only change the password or sign out.
-3. After saving, the normal app opens. To verify, **User Accounts → Active sessions** should show only this session.
-
-**Risks and notes**
-- Anyone who can run programs as your Windows user can perform this recovery. That person could also read the
-  database directly, so the tool grants no new power. Protect your Windows account.
-- The temporary password appears **only** on screen. It is never written to a log or the audit trail. Don't save it.
-- "CONDUIT appears to be running" right after a crash means a leftover `server.lock`. If you are certain CONDUIT is
-  closed, delete `server.lock` from the data folder and retry.
-
-## Sign-in rate limits (dormant account system)
-
-After 5 failed sign-ins for one username within 15 minutes, that username is blocked until the oldest failure is
-15 minutes old. More than 20 failures across all usernames within a minute blocks all sign-ins for up to a minute.
-A successful sign-in, a password change, an administrator password reset or an offline recovery clears that
-account's count. Since Phase 2.1, these limits **survive a restart**: they are rebuilt from the audit log.
-
-## Sessions (dormant account system)
-
-Signing in keeps you signed in across app restarts for up to **14 days**, or until **7 days** without use. Use
-**Sign out** in the top bar, or **User Accounts → Active sessions → Revoke**, to end a session immediately.
+CONDUIT user accounts, sign-in, sessions and streamer profiles weren't used by the desktop app since Phase 2.3 and
+were removed in 1.6.5, along with the administrator password recovery tool (`--recover-admin`). Their database
+tables (`users`, `sessions`, `streamer_profiles`, `profile_memberships`) and any saved rows are kept untouched;
+nothing reads them any more.
 
 ## Building the installer
 
@@ -1222,10 +1164,6 @@ two streamers.
   `node_modules\electron\dist\electron.exe apps/desktop`.
 - **`Electron failed to install correctly`:** run `npm run install-electron -w @conduit/desktop`.
 
-- **Locked out after failed sign-ins (`Too many failed attempts`):** wait up to 15 minutes (restarting does not help).
-  An administrator can clear another user's lockout by setting a new password for them. A locked-out administrator
-  can use the offline recovery procedure.
-
 ## Testing
 
 ```powershell
@@ -1234,11 +1172,10 @@ npm run test:watch   # re-run on change
 npm run verify       # typecheck + tests + production build
 ```
 
-Integration tests start a real server on an ephemeral loopback port. They use deliberately cheap Argon2 parameters
-for speed; production configuration cannot go below the OWASP minimum.
+Integration tests start a real server on an ephemeral loopback port.
 
 ## Remote access (second streamer's own PC)
 
 **Intentionally not available.** The server binds to loopback only, and configuration validation rejects other
-addresses, even though authentication now exists. Remote access needs its own threat model first (TLS, remote abuse
-controls, origin handling, cross-device revocation).
+addresses. Remote access needs its own design and threat model first (authentication, TLS, remote abuse controls,
+origin handling, cross-device revocation).

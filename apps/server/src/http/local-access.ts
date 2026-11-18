@@ -1,6 +1,6 @@
+import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { RequestHandler } from 'express';
-import { safeEqual } from '@conduit/security';
 import { AppError } from '../errors';
 
 /**
@@ -12,6 +12,13 @@ import { AppError } from '../errors';
  * binding and the Host/Origin checks, this keeps the API usable only by the desktop app that launched it.
  */
 export const LOCAL_KEY_HEADER = 'x-conduit-local-key';
+
+/** Constant-time string comparison (lengths are hidden by hashing first). */
+export function safeEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const hb = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
 
 export function hasLocalKey(req: IncomingMessage, expected: string): boolean {
   const value = req.headers[LOCAL_KEY_HEADER];

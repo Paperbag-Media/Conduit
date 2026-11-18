@@ -26,7 +26,7 @@ describe('migration 32', () => {
   it('keeps every moderation record, unchanged', () => {
     db = old();
     const before = db.prepare('SELECT * FROM moderation_actions').all();
-    expect(migrate(db, migrations).applied).toEqual([32]);
+    expect(migrate(db, migrations).applied).toEqual([32, 33]);
     expect(db.prepare('SELECT * FROM moderation_actions').all()).toEqual(before);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'moderation_actions' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()).toEqual([
       { name: 'moderation_actions_created' },

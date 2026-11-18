@@ -115,7 +115,7 @@ describe('settings', () => {
     const s = await state();
     expect(s.settings).toEqual(DEFAULT_LOYALTY_SETTINGS);
     expect(s.settings).not.toHaveProperty('kick');
-    expect(s.stats).toMatchObject({ viewers: 0, outstanding: 0, pending: 0, members: 0, totalXp: 0, legacyKick: { accounts: 0, points: 0 } });
+    expect(s.stats).toEqual({ viewers: 0, outstanding: 0, pending: 0, members: 0, totalXp: 0 });
     chat(ALICE);
     expect([xp(ALICE), points(ALICE)]).toEqual([0, 0]);
     expect(h.services.loyalty.slashCommands()).toEqual([]);
@@ -692,9 +692,11 @@ describe('migration 20', () => {
       `);
       const before = (sql: string) => JSON.stringify(db.prepare(sql).all());
       const snapshot = ['loyalty_accounts', 'loyalty_transactions', 'loyalty_rewards', 'loyalty_redemptions', 'audit_logs'].map((t) => before(`SELECT * FROM ${t} ORDER BY rowid`));
-      expect(migrate(db, migrations)).toEqual({ applied: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32], currentVersion: 32 });
+      expect(migrate(db, migrations)).toEqual({ applied: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33], currentVersion: 33 });
       expect(['loyalty_accounts', 'loyalty_transactions', 'loyalty_rewards', 'loyalty_redemptions', 'audit_logs'].map((t) => before(`SELECT * FROM ${t} ORDER BY rowid`))).toEqual(snapshot);
-      expect(loyaltyRepo.stats(db)).toEqual({ viewers: 1, outstanding: 40, pending: 1, legacyKick: { accounts: 1, points: 15 } });
+      expect(loyaltyRepo.stats(db)).toEqual({ viewers: 1, outstanding: 40, pending: 1 });
+      // The older Kick balance is kept as it was.
+      expect(db.prepare("SELECT COUNT(*) AS n, SUM(balance) AS points FROM loyalty_accounts WHERE platform = 'kick'").get()).toEqual({ n: 1, points: 15 });
       expect(db.prepare('SELECT COUNT(*) AS n FROM loyalty_levels').get()).toEqual({ n: 0 });
       loyaltyLevelsRepo.ensure(db, GUILD, ALICE, 'alice', 'now');
       expect(() => db.prepare(`UPDATE loyalty_levels SET xp = -1 WHERE user_id = '${ALICE}'`).run()).toThrow(/CHECK/);

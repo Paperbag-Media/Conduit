@@ -6,25 +6,52 @@ import { DiscordChannelPicker, useDiscordChannels } from '../../components/disco
 import { EmbedEditor, EmbedPreview } from '../../components/discord/EmbedEditor';
 import { Button, Loading } from '../../components/forms';
 import { PageActions } from '../../components/PageActions';
+import { PageTabs, streamTabs, useRememberedTab } from '../../components/PageTabs';
 import { PlatformIcon } from '../../components/PlatformIcon';
 import { useAsync, useBackendStatus, usePolling } from '../../hooks';
 
 const POLL_MS = 5000;
 const CHAT_NAME = { kick: 'Kick', twitch: 'Twitch' } as const;
+type TimedPlatform = TimedMessageView['platform'];
 
-/** Timed Messages: one message repeated in your Kick or Twitch chat or a Discord channel, by time and/or chat activity. */
-export function TimedMessagesPage() {
+/** Loads every timed message (each page shows one platform's). */
+function useTimedMessages() {
   const backend = useBackendStatus();
-  const { data, error, reload } = useAsync(() => api<TimedMessagesState>('GET', '/api/timed-messages'), [backend?.state === 'running']);
-  usePolling(reload, error ? 2000 : POLL_MS, [data, error]);
-  if (!data) return <Loading label={error ? `Waiting for the CONDUIT backend… (${errorMessage(error)})` : 'Loading timed messages…'} />;
-  return <TimedMessagesView s={data} onChanged={reload} />;
+  const state = useAsync(() => api<TimedMessagesState>('GET', '/api/timed-messages'), [backend?.state === 'running']);
+  usePolling(state.reload, state.error ? 2000 : POLL_MS, [state.data, state.error]);
+  return state;
+}
+
+function Waiting({ error }: { error: unknown }) {
+  return <Loading label={error ? `Waiting for the CONDUIT backend… (${errorMessage(error)})` : 'Loading timed messages…'} />;
+}
+
+const STREAM_TABS = streamTabs(['kick', 'twitch']);
+
+/** Streaming → Timed Messages: messages repeated in your Kick or Twitch chat, by time and/or chat activity. */
+export function StreamTimedMessagesPage() {
+  const { data, error, reload } = useTimedMessages();
+  const [tab, setTab] = useRememberedTab('conduit.timedMessagesTab', STREAM_TABS);
+  return (
+    <PageTabs id="timed" label="Platform" tabs={STREAM_TABS} active={tab} onChange={setTab}>
+      {!data ? <Waiting error={error} /> : tab !== 'youtube' && <TimedMessagesView key={tab} s={data} platform={tab} onChanged={reload} />}
+    </PageTabs>
+  );
+}
+
+/** Discord → Auto Messages → Timed: messages repeated in a Discord channel. */
+export function DiscordTimedMessages() {
+  const { data, error, reload } = useTimedMessages();
+  if (!data) return <Waiting error={error} />;
+  return <TimedMessagesView s={data} platform="discord" onChanged={reload} />;
 }
 
 type Editing = { mode: 'new' } | { mode: 'edit'; item: TimedMessageView } | null;
 
-export function TimedMessagesView({ s, onChanged }: { s: TimedMessagesState; onChanged?: () => void }) {
+/** One platform's timed messages: the list, and the editor for a new or chosen one. */
+export function TimedMessagesView({ s, platform, onChanged }: { s: TimedMessagesState; platform: TimedPlatform; onChanged?: () => void }) {
   const [editing, setEditing] = useState<Editing>(null);
+  const items = s.timedMessages.filter((t) => t.platform === platform);
   return (
     <div className="stack">
       {!editing && (
@@ -34,11 +61,11 @@ export function TimedMessagesView({ s, onChanged }: { s: TimedMessagesState; onC
       )}
       <section className="card" aria-label="Timed messages">
         <p className="muted small">Each one runs on its own schedule. Switch it on or off, edit, duplicate or delete it here.</p>
-        {s.timedMessages.length === 0 && !editing ? (
+        {items.length === 0 && !editing ? (
           <p className="empty-note">No timed messages yet.</p>
         ) : (
           <ul className="item-list">
-            {s.timedMessages.map((t) => (
+            {items.map((t) => (
               <TimedRow key={t.id} t={t} onEdit={() => setEditing({ mode: 'edit', item: t })} onChanged={onChanged} />
             ))}
           </ul>
@@ -48,6 +75,7 @@ export function TimedMessagesView({ s, onChanged }: { s: TimedMessagesState; onC
         <TimedEditor
           key={editing.mode === 'edit' ? editing.item.id : 'new'}
           initial={editing.mode === 'edit' ? editing.item : null}
+          platform={platform}
           s={s}
           onClose={() => setEditing(null)}
           onSaved={() => {
@@ -132,7 +160,7 @@ function TimedRow({ t, onEdit, onChanged }: { t: TimedMessageView; onEdit: () =>
 }
 
 interface Draft {
-  platform: 'kick' | 'twitch' | 'discord';
+  platform: TimedPlatform;
   name: string;
   enabled: boolean;
   content: string;
@@ -147,9 +175,9 @@ interface Draft {
   combine: 'all' | 'any';
 }
 
-function draftOf(t: TimedMessageView | null): Draft {
+function draftOf(t: TimedMessageView | null, platform: TimedPlatform): Draft {
   return {
-    platform: t?.platform ?? 'discord',
+    platform: t?.platform ?? platform,
     name: t?.name ?? '',
     enabled: t?.enabled ?? false,
     content: t ? (t.platform !== 'discord' ? t.content : t.message.content) : '',
@@ -172,8 +200,20 @@ export function toBody(d: Draft) {
     : { platform: 'discord' as const, name: d.name, enabled: d.enabled, guildId: d.guildId, channelId: d.channelId, message: { content: d.content, embed: d.useEmbed ? d.embed : null }, ...schedule };
 }
 
-function TimedEditor({ initial, s, onClose, onSaved }: { initial: TimedMessageView | null; s: TimedMessagesState; onClose: () => void; onSaved: () => void }) {
-  const [d, setD] = useState<Draft>(draftOf(initial));
+function TimedEditor({
+  initial,
+  platform,
+  s,
+  onClose,
+  onSaved,
+}: {
+  initial: TimedMessageView | null;
+  platform: TimedPlatform;
+  s: TimedMessagesState;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [d, setD] = useState<Draft>(draftOf(initial, platform));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -217,23 +257,11 @@ function TimedEditor({ initial, s, onClose, onSaved }: { initial: TimedMessageVi
   return (
     <section className="card editor-card" aria-labelledby="timed-editor-title">
       <h2 id="timed-editor-title">{initial ? `Edit “${initial.name}”` : 'New timed message'}</h2>
-      <div className="editor-grid">
-        <label className="field">
-          <span className="field-label">Name</span>
-          <input value={d.name} maxLength={60} onChange={(e) => set({ name: e.target.value })} />
-          {err('name') && <span className="field-error">{err('name')}</span>}
-        </label>
-        <div className="field">
-          <span className="field-label">Where</span>
-          <div className="segmented" role="radiogroup" aria-label="Platform">
-            {(['discord', 'kick', 'twitch'] as const).map((p) => (
-              <button key={p} type="button" role="radio" aria-checked={d.platform === p} className={`segment${d.platform === p ? ' active' : ''}`} disabled={!!initial} onClick={() => set({ platform: p })}>
-                {p === 'discord' ? 'Discord channel' : `${CHAT_NAME[p]} chat`}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      <label className="field">
+        <span className="field-label">Name</span>
+        <input value={d.name} maxLength={60} onChange={(e) => set({ name: e.target.value })} />
+        {err('name') && <span className="field-error">{err('name')}</span>}
+      </label>
 
       {d.platform === 'discord' ? (
         <DiscordChannelPicker channels={channels} guildId={d.guildId} channelId={d.channelId} needs={['viewChannel', 'sendMessages', ...(d.useEmbed ? (['embedLinks'] as const) : [])]} onChange={(guildId, channelId) => set({ guildId, channelId })} error={err('channelId') ?? err('guildId')} />

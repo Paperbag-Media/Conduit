@@ -156,7 +156,7 @@ const twitchAction = z.discriminatedUnion('action', [
 ]);
 
 export const moderationActionSchema = z.union([discordAction, kickAction, twitchAction]);
-export type ModerationActionInput = z.input<typeof moderationActionSchema>;
+
 export type ModerationAction = z.output<typeof moderationActionSchema>;
 
 export const moderationLookupSchema = z.discriminatedUnion('platform', [

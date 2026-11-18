@@ -13,46 +13,6 @@ export const healthResponseSchema = z.object({
 });
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
-// ── realtime (/ws) ──────────────────────────────────────────────────────────
-
-/**
- * Messages a client may send. Strict objects: identity always comes from the authenticated session, never
- * from message fields, so extra keys such as a spoofed `userId` or `role` are rejected.
- */
-export const clientMessageSchema = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('subscribe'), profileId: z.uuid() }),
-  z.strictObject({ type: z.literal('unsubscribe'), profileId: z.uuid() }),
-]);
-export type ClientMessage = z.infer<typeof clientMessageSchema>;
-
-/** Messages the server pushes to authenticated clients. */
-export const serverMessageSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('hello'), version: z.string(), serverTime: z.string(), userId: z.string() }),
-  z.object({ type: z.literal('subscribed'), profileId: z.string() }),
-  z.object({
-    type: z.literal('unsubscribed'),
-    profileId: z.string(),
-    reason: z.enum(['requested', 'access_revoked']),
-  }),
-  z.object({ type: z.literal('profile.updated'), profileId: z.string() }),
-  z.object({ type: z.literal('members.changed'), profileId: z.string() }),
-  z.object({
-    type: z.literal('error'),
-    code: z.enum(['bad_request', 'not_found']),
-    message: z.string(),
-  }),
-]);
-export type ServerMessage = z.infer<typeof serverMessageSchema>;
-
-/** WebSocket close codes used by the server (4000–4999 is the application range). */
-export const WS_CLOSE = {
-  /** The session was revoked, expired, or its account was disabled. */
-  sessionInvalid: 4401,
-  /** Too many malformed messages. */
-  policyViolation: 1008,
-  goingAway: 1001,
-} as const;
-
 // ── errors ──────────────────────────────────────────────────────────────────
 
 export const API_ERROR_CODES = [
@@ -60,7 +20,6 @@ export const API_ERROR_CODES = [
   'validation_error',
   'unauthorized',
   'forbidden',
-  'password_change_required',
   'not_found',
   'conflict',
   'rate_limited',

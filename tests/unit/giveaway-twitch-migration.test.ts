@@ -56,7 +56,8 @@ describe('migration 31', () => {
       INSERT INTO giveaways (id, prize, status, winner_count, allow_kick, allow_discord, allow_twitch, created_at, updated_at) VALUES ('g2', 'Prize', 'open', 1, 0, 0, 1, '${AT}', '${AT}');
       INSERT INTO giveaway_entries (giveaway_id, platform, platform_user_id, display_name, entered_at) VALUES ('g2', 'twitch', '200', 'Fan', '${AT}');
     `);
-    expect(() => db.exec(`INSERT INTO giveaways (id, prize, status, winner_count, allow_kick, allow_discord, allow_twitch, created_at, updated_at) VALUES ('g3', 'Prize', 'open', 1, 0, 1, 0, '${AT}', '${AT}')`)).toThrow(/UNIQUE/);
+    // One open stream giveaway at a time (migration 33: a Discord-only giveaway may run beside it).
+    expect(() => db.exec(`INSERT INTO giveaways (id, prize, status, winner_count, allow_kick, allow_discord, allow_twitch, created_at, updated_at) VALUES ('g3', 'Prize', 'open', 1, 1, 0, 0, '${AT}', '${AT}')`)).toThrow(/UNIQUE/);
     expect(() => db.exec(`INSERT INTO giveaways (id, prize, status, winner_count, allow_kick, allow_discord, allow_twitch, created_at, updated_at) VALUES ('g4', 'Prize', 'closed', 1, 0, 0, 0, '${AT}', '${AT}')`)).toThrow(/CHECK/);
   });
 });

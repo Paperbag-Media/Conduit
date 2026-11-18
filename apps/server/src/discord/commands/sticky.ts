@@ -73,7 +73,7 @@ export function stickyCommands(d: StickyCommandDeps): SlashCommand[] {
         await service.create({ name: (label ? `#${label}` : 'Sticky message').slice(0, 60), guildId: ctx.guildId, channelId, message: { content: text } }).catch((err) => {
           throw problem(err);
         });
-        return { content: `<#${channelId}> now has a sticky message. Edit it further in CONDUIT → Sticky Messages.`, ephemeral: true };
+        return { content: `<#${channelId}> now has a sticky message. Edit it further in CONDUIT → Discord → Auto Messages.`, ephemeral: true };
       },
     },
   ];

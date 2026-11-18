@@ -9,6 +9,48 @@ first). It becomes the next version when a release is prepared.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-18
+
+### Added
+- **Kick → Live chat warns when chat isn't arriving:** if your Kick stream has been live for 10 minutes and nothing
+  has reached CONDUIT from Kick, the Kick card and Live chat say so and what to check (the tunnel and the webhook URL).
+  The warning clears as soon as a message arrives.
+
+### Changed
+- **New sidebar: Discord and Streaming.** After the Dashboard come two groups.
+  - **Discord:** Discord Bot, Commands, Embed Creator, Auto Messages, Giveaways, and Loyalty & Rewards.
+  - **Streaming:** Commands, Moderation, Notifications, Clips, Timed Messages and Giveaways.
+  - The Kick, Twitch and YouTube groups are gone. Each Streaming page has a tab per platform (Kick and Twitch, with
+    YouTube marked Soon), and each page remembers the tab you last opened.
+  - **OBS Overlays** is now **Widgets** (Soon).
+- **Commands are split:** the Discord bot's commands are under Discord → Commands, and Kick and Twitch chat commands
+  under Streaming → Commands.
+- **Auto Messages (Discord):** Sticky Messages and Discord timed messages are now one page with **Sticky** and
+  **Timed** tabs. Kick and Twitch timed messages are under Streaming → Timed Messages.
+- **Discord giveaways are separate from stream giveaways.**
+  - **Discord → Giveaways** is entered with the Enter Giveaway button. **Streaming → Giveaways** is entered with
+    `!enter` in Kick or Twitch chat.
+  - One of each can run at the same time, and a giveaway can't mix Discord with Kick or Twitch.
+  - Older giveaways that allowed both are listed under Streaming and keep working until they end.
+- **Faster, sturdier start:** the backend no longer runs a password-hashing self-test on every start.
+
+### Removed
+- **The unused account system:** CONDUIT user accounts, sign-in, sessions, streamer profiles, user administration,
+  the realtime WebSocket and the administrator password recovery tool (`--recover-admin`). The app hasn't used any of
+  it since sign-in was removed; it opens straight to the Dashboard as before. Saved rows stay in the database.
+- **The standalone server mode** (`npm run server`): it could never connect Discord, Kick or Twitch, because their
+  sign-ins are stored by the CONDUIT app itself. Running CONDUIT (`npm run dev`, `npm start` or the installed app) is
+  unchanged.
+- **Settings that no longer exist** (`CONDUIT_SETUP_TOKEN`, `CONDUIT_SESSION_TTL_HOURS`, `CONDUIT_SESSION_IDLE_HOURS`
+  and the `CONDUIT_ARGON2_*` values) are ignored, so an environment that still sets them starts normally.
+
+### Fixed
+- **Kick chat couldn't recover from a broken subscription:** CONDUIT kept reusing its existing Kick subscription even
+  when Kick had never delivered to it. While nothing has arrived, **Renew subscription** (Manage → Live chat) now
+  deletes CONDUIT's Kick subscriptions and creates new ones.
+- **Twitch chat and Twitch timed messages:** the check that keeps a message on one line now uses an escaped form that
+  editors and tools can't strip. Nothing changes for what you can send.
+
 ## [1.6.4] - 2026-11-08
 
 ### Added

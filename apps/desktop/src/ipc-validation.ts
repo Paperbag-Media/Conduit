@@ -10,8 +10,7 @@ const MAX_BODY_BYTES = 100 * 1024;
 
 /**
  * The only API calls the renderer may make (allow-list, deny by default). The main process attaches the local
- * access key, so anything not listed here stays unreachable from the UI. That includes the dormant account API
- * (/api/setup, /api/auth/*, /api/me/*, /api/profiles*, /api/admin/*).
+ * access key, so anything not listed here stays unreachable from the UI.
  */
 const ALLOWED: ReadonlyArray<{ method: ApiMethod; path: RegExp }> = [
   { method: 'GET', path: /^\/api\/health$/ },

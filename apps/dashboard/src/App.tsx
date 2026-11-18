@@ -31,18 +31,18 @@ function page<K extends string>(load: () => Promise<Record<K, ComponentType>>, n
 
 /** Every built page except the Dashboard (the first screen) is loaded when it is first opened. */
 const PAGES: Record<string, LazyExoticComponent<ComponentType>> = {
-  commands: page(() => import('./pages/community/CommandsPage'), 'CommandsPage'),
-  giveaways: page(() => import('./pages/community/GiveawaysPage'), 'GiveawaysPage'),
-  'timed-messages': page(() => import('./pages/community/TimedMessagesPage'), 'TimedMessagesPage'),
   'discord-moderation': page(() => import('./pages/community/ModerationPage'), 'DiscordModerationPage'),
-  'sticky-messages': page(() => import('./pages/discord/StickyMessagesPage'), 'StickyMessagesPage'),
+  'discord-commands': page(() => import('./pages/community/CommandsPage'), 'DiscordCommandsPage'),
   'embed-creator': page(() => import('./pages/discord/EmbedCreatorPage'), 'EmbedCreatorPage'),
+  'auto-messages': page(() => import('./pages/discord/AutoMessagesPage'), 'AutoMessagesPage'),
+  'discord-giveaways': page(() => import('./pages/community/GiveawaysPage'), 'DiscordGiveawaysPage'),
   loyalty: page(() => import('./pages/discord/LoyaltyPage'), 'LoyaltyPage'),
-  'kick-moderation': page(() => import('./pages/community/ModerationPage'), 'KickModerationPage'),
-  'kick-notifications': page(() => import('./pages/kick/KickNotificationsPage'), 'KickNotificationsPage'),
-  'kick-clips': page(() => import('./pages/kick/KickClipsPage'), 'KickClipsPage'),
-  'twitch-notifications': page(() => import('./pages/twitch/TwitchNotificationsPage'), 'TwitchNotificationsPage'),
-  'twitch-moderation': page(() => import('./pages/community/ModerationPage'), 'TwitchModerationPage'),
+  commands: page(() => import('./pages/community/CommandsPage'), 'StreamCommandsPage'),
+  moderation: page(() => import('./pages/streaming/StreamingPages'), 'StreamModerationPage'),
+  notifications: page(() => import('./pages/streaming/StreamingPages'), 'StreamNotificationsTabsPage'),
+  clips: page(() => import('./pages/streaming/StreamingPages'), 'StreamClipsPage'),
+  'timed-messages': page(() => import('./pages/community/TimedMessagesPage'), 'StreamTimedMessagesPage'),
+  giveaways: page(() => import('./pages/community/GiveawaysPage'), 'StreamGiveawaysPage'),
   settings: lazy(() => import('./pages/app/SettingsPage')),
 };
 
@@ -112,16 +112,6 @@ export function App() {
           {SECTION_GROUPS.map((group) => {
             const items = SECTIONS.filter((s) => s.group === group.id);
             if (!group.label) return <div key={group.id} className="nav-group">{items.map(navItem)}</div>;
-            if (group.soon) {
-              return (
-                <div key={group.id} className="nav-group">
-                  <span className={`nav-group-label nav-group-soon nav-platform nav-platform-${group.platform}`} aria-disabled="true" title="Coming soon">
-                    <span className="nav-group-name">{group.label}</span>
-                    <span className="nav-phase">Soon</span>
-                  </span>
-                </div>
-              );
-            }
             // The group of the page being shown never folds away.
             const folded = collapsed.has(group.id) && !items.some((s) => s.id === active.id);
             return (
@@ -154,7 +144,7 @@ export function App() {
       <main className="content">
         <header className="topbar">
           <div className="topbar-title">
-            <h1>{active.label}</h1>
+            <h1>{active.title ?? active.label}</h1>
             <p className="topbar-summary">{active.summary}</p>
           </div>
           <StatusPill status={backendStatus} />

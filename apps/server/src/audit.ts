@@ -2,21 +2,6 @@ import { auditRepo, type AuditEntry, type Database } from '@conduit/database';
 import { redact } from '@conduit/logger';
 
 export type AuditAction =
-  | 'setup.completed'
-  | 'auth.login'
-  | 'auth.logout'
-  | 'session.revoked'
-  | 'password.changed'
-  | 'profile.created'
-  | 'profile.updated'
-  | 'member.added'
-  | 'member.role_changed'
-  | 'member.removed'
-  | 'profile.ownership_transferred'
-  | 'user.created'
-  | 'user.status_changed'
-  | 'user.password_reset'
-  | 'user.password_recovered'
   | 'connection.created'
   | 'connection.removed'
   | 'connection.expired'
@@ -61,7 +46,7 @@ export type AuditAction =
   | 'embed.message_loaded'
   | 'embed.message_recreated'
   | 'embed.message_removed'
-  | 'user.sessions_revoked'
+
   | 'backup.settings_updated'
   | 'backup.created'
   | 'backup.restore_requested'

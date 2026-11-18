@@ -322,7 +322,7 @@ const antinukeRule = z.strictObject({
   threshold: z.number().int().min(1, 'At least 1').max(50, 'At most 50'),
   windowSeconds: z.number().int().min(5, 'At least 5 seconds').max(3600, 'At most 1 hour'),
 });
-export type AntinukeRuleSettings = z.output<typeof antinukeRule>;
+
 
 export const antinukeSchema = z.strictObject({
   enabled: z.boolean(),

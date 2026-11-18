@@ -315,13 +315,6 @@ function DiscordLogWithHistory({ s }: { s: DiscordModerationState }) {
 // ── Discord ──────────────────────────────────────────────────────────────────
 
 /** The Discord moderation log (Discord Bot → Logs). Protection has its own tab (DiscordProtection.tsx). */
-export function DiscordModerationView({ s }: { s: DiscordModerationState }) {
-  return (
-    <div className="stack">
-      <DiscordCommandLog s={s} />
-    </div>
-  );
-}
 
 const SERVER_ACTION_LABEL: Record<DiscordServerModerationView['action'], string> = {
   ban: 'Ban',

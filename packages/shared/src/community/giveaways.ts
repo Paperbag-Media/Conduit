@@ -2,9 +2,10 @@
  * Giveaways: contracts shared by the backend and the dashboard.
  *
  * Lifecycle: draft → open (accepting entries) → closed (entries closed) → drawn (winners picked), or cancelled from any
- * state before drawing. At most one giveaway is open at a time, so the entry methods (!enter on Kick and Twitch, the
- * button on Discord) always mean the same giveaway. Entries are unique per platform and platform user id; the same
- * person on two platforms counts as two entrants (accounts aren't linked across platforms).
+ * state before drawing. Discord giveaways and stream giveaways are separate: a stream giveaway is entered from Kick or
+ * Twitch chat (!enter), a Discord giveaway with its embed's button. One of each can be open at a time, so !enter always
+ * means the open stream giveaway. Entries are unique per platform and platform user id; the same person on Kick and
+ * Twitch counts as two entrants (accounts aren't linked across platforms).
  */
 import { z } from 'zod';
 import { KICK_CHAT_MAX_BYTES, KICK_CHAT_MAX_CHARS } from '../kick/kick-setup';
@@ -16,6 +17,15 @@ export const GIVEAWAY_PLATFORMS = ['kick', 'twitch', 'discord'] as const;
 export type GiveawayPlatform = (typeof GIVEAWAY_PLATFORMS)[number];
 /** The platforms entered from chat with !enter, where the chatbot posts the giveaway's messages. */
 export type GiveawayChatPlatform = Exclude<GiveawayPlatform, 'discord'>;
+
+/** Where a giveaway runs: on stream (Kick and Twitch chat) or on Discord. One of each can be open at a time. */
+export type GiveawaySide = 'stream' | 'discord';
+/** A giveaway with Kick or Twitch entry is a stream giveaway (also one made before the split that allowed Discord too). */
+export function giveawaySide(platforms: readonly GiveawayPlatform[]): GiveawaySide {
+  return platforms.includes('kick') || platforms.includes('twitch') ? 'stream' : 'discord';
+}
+/** Why Discord can't be added to a stream giveaway (or the other way round). */
+export const GIVEAWAY_SIDES_SEPARATE = 'Discord giveaways are separate: start them from Discord → Giveaways';
 
 export const GIVEAWAY_PRIZE_MAX = 100;
 export const GIVEAWAY_DESCRIPTION_MAX = 500;
@@ -119,7 +129,7 @@ export const createGiveawaySchema = z
     description: descriptionSchema.optional().transform((d) => d ?? null),
     winnerCount: winnerCountSchema.default(1),
     durationMinutes: durationSchema.default(null),
-    platforms: platformsSchema.default(['kick', 'discord']),
+    platforms: platformsSchema.default(['kick']),
     discordChannel: discordChannelSchema.default(null),
     /** Optional Kick Channel Points reward for bonus tickets. */
     kickReward: kickRewardSchema.default(null),
@@ -128,6 +138,8 @@ export const createGiveawaySchema = z
   })
   .strict()
   .superRefine((g, ctx) => {
+    if (g.platforms.includes('discord') && giveawaySide(g.platforms) === 'stream')
+      ctx.addIssue({ code: 'custom', path: ['platforms'], message: GIVEAWAY_SIDES_SEPARATE });
     if (g.kickReward && !g.platforms.includes('kick'))
       ctx.addIssue({ code: 'custom', path: ['kickReward'], message: 'Bonus tickets need Kick entry' });
     if (g.subscriberMultiplier > 1 && !g.platforms.includes('kick') && !g.platforms.includes('twitch'))
@@ -330,10 +342,7 @@ export const KICK_GIVEAWAY_MESSAGES: Record<
     default: '🎉 I’ve started a giveaway for {prize}! To enter, {how_to_enter}. {winners_note} {reward_note} {closes_note}',
     variables: {
       prize: { description: 'The prize', example: 'Steam gift card' },
-      how_to_enter: {
-        description: 'How to enter on the giveaway’s platforms',
-        example: `type ${GIVEAWAY_ENTER.kick} in chat or click ${GIVEAWAY_BUTTONS.enter.label} on the Discord announcement`,
-      },
+      how_to_enter: { description: 'How to enter', example: `type ${GIVEAWAY_ENTER.kick} in chat` },
       winner_count: { description: 'Number of winners', example: '2' },
       winners_note: { description: '“2 winners.” (empty with one winner)', example: '2 winners.' },
       reward: { description: 'The Channel Points reward’s title (empty without one)', example: 'Bonus ticket' },
@@ -366,7 +375,7 @@ export const KICK_GIVEAWAY_MESSAGES: Record<
     default: '🏆 {winner_label} of {prize}: {winners}. Congratulations!',
     variables: {
       prize: { description: 'The prize', example: 'Steam gift card' },
-      winners: { description: 'The winners (chat winners as @name, Discord winners as “name (Discord)”)', example: '@viewer123, fan (Discord)' },
+      winners: { description: 'The winners, as @name', example: '@viewer123, @viewer456' },
       winner_label: { description: '“Winner” or “Winners”', example: 'Winners' },
     },
   },

@@ -143,9 +143,16 @@ export const giveawaysRepo = {
     return r ? toRecord(r) : undefined;
   },
 
-  /** The giveaway accepting entries, if any (at most one, enforced by the schema). */
-  findOpen(db: Database): GiveawayRecord | undefined {
-    const r = queryOne<Row>(db, `SELECT ${COLUMNS} FROM giveaways WHERE status = 'open'`);
+  /**
+   * The giveaway accepting entries on one side, if any (at most one per side, enforced by the schema): 'stream' = it
+   * allows Kick or Twitch entry, 'discord' = Discord entry only.
+   */
+  findOpen(db: Database, side: 'stream' | 'discord'): GiveawayRecord | undefined {
+    const r = queryOne<Row>(
+      db,
+      `SELECT ${COLUMNS} FROM giveaways WHERE status = 'open' AND (allow_kick = 1 OR allow_twitch = 1) = ?`,
+      side === 'stream' ? 1 : 0,
+    );
     return r ? toRecord(r) : undefined;
   },
 

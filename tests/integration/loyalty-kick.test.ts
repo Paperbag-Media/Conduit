@@ -84,8 +84,8 @@ describe('Kick takes no part in Loyalty & Rewards', () => {
     loyaltyRepo.ensureAccount(h.db, 'kick', '5550001', 'Viewer', at);
     loyaltyRepo.applyChange(h.db, { id: '33333333-3333-4333-8333-333333333333', platform: 'kick', userId: '5550001', amount: 15, kind: 'chat', reason: 'Chat message', eventKey: 'kick:chat:old', redemptionId: null, at });
     const s = (await h.call<LoyaltyState>('GET', '/api/loyalty')).body;
-    expect(s.stats.legacyKick).toEqual({ accounts: 1, points: 15 });
     expect(s.stats.viewers).toBe(0); // Discord members only
+    expect(s.stats.outstanding).toBe(0); // the older Kick points aren't counted
     // Older Kick points history is listed in Discord Bot → Logs → Moderation log, marked as Kick.
     const log = (await h.call<{ loyaltyHistory: Array<{ userName: string | null; change: string | null }> }>('GET', '/api/moderation/discord')).body.loyaltyHistory;
     expect(log).toEqual(expect.arrayContaining([expect.objectContaining({ userName: 'Viewer (Kick, older)', change: expect.stringMatching(/^\+15 /) })]));

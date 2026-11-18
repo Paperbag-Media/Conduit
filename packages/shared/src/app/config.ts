@@ -33,23 +33,7 @@ export const serverConfigSchema = z
     logLevel: z.enum(LOG_LEVELS).default('info'),
     logToConsole: booleanString.default(true),
     allowedOrigins: originList.default([APP_ORIGIN]),
-    /** Absolute session lifetime. Default 14 days. */
-    sessionTtlHours: z.coerce.number().int().min(1).max(24 * 90).default(24 * 14),
-    /** A session unused for this long expires early. Default 7 days. */
-    sessionIdleHours: z.coerce.number().int().min(1).max(24 * 90).default(24 * 7),
-    /** Argon2id cost. Floors are the OWASP minimums (19 MiB, 2 passes); they can be raised, never lowered. */
-    argon2MemoryKiB: z.coerce.number().int().min(19_456).max(1_048_576).default(19_456),
-    argon2Passes: z.coerce.number().int().min(2).max(10).default(2),
-    argon2Parallelism: z.coerce.number().int().min(1).max(8).default(1),
-    /**
-     * One-time secret required by the first-run setup endpoint. The desktop app generates one per launch;
-     * a standalone server generates one and prints it to the console when setup is still required.
-     */
-    setupToken: z.string().min(32).max(256).optional(),
-    /**
-     * Local access key required on every /api request (except health) and on the WebSocket. The desktop app
-     * generates one per launch and is the only holder; a standalone server generates one and prints it.
-     */
+    /** Local access key required on every /api request (except health). The desktop app generates one per launch and is the only holder. */
     localKey: z.string().min(32).max(256).optional(),
     /**
      * Loopback port for OAuth redirects. Platforms match redirect URIs exactly, so this must equal the port in the
@@ -63,22 +47,14 @@ export const serverConfigSchema = z
     kickWebhookPort: z.coerce.number().int().min(1024).max(65535).default(47822),
   })
   .superRefine((cfg, ctx) => {
-    // Remote access is intentionally disabled. Authentication exists (Phase 2), but exposing the server beyond
-    // this machine needs its own threat model: transport security, abuse controls, origin handling. Do not relax
-    // this check without that work.
+    // Remote access is intentionally disabled: exposing the server beyond this machine needs its own threat model
+    // (authentication, transport security, abuse controls, origin handling). Do not relax this check without that work.
     if (!isLoopbackHost(cfg.host)) {
       ctx.addIssue({
         code: 'custom',
         path: ['host'],
         message:
           'Only loopback bind addresses (127.0.0.1, ::1, localhost) are allowed. Remote access is not supported yet.',
-      });
-    }
-    if (cfg.sessionIdleHours > cfg.sessionTtlHours) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['sessionIdleHours'],
-        message: 'must not exceed CONDUIT_SESSION_TTL_HOURS',
       });
     }
   });
@@ -99,12 +75,6 @@ const ENV_KEYS = {
   logLevel: 'CONDUIT_LOG_LEVEL',
   logToConsole: 'CONDUIT_LOG_CONSOLE',
   allowedOrigins: 'CONDUIT_ALLOWED_ORIGINS',
-  sessionTtlHours: 'CONDUIT_SESSION_TTL_HOURS',
-  sessionIdleHours: 'CONDUIT_SESSION_IDLE_HOURS',
-  argon2MemoryKiB: 'CONDUIT_ARGON2_MEMORY_KIB',
-  argon2Passes: 'CONDUIT_ARGON2_PASSES',
-  argon2Parallelism: 'CONDUIT_ARGON2_PARALLELISM',
-  setupToken: 'CONDUIT_SETUP_TOKEN',
   localKey: 'CONDUIT_LOCAL_KEY',
   oauthCallbackPort: 'CONDUIT_OAUTH_CALLBACK_PORT',
   kickWebhookPort: 'CONDUIT_KICK_WEBHOOK_PORT',
@@ -118,7 +88,7 @@ export function envValue(env: Record<string, string | undefined>, name: `CONDUIT
 /** Builds and validates the server config from environment variables; throws ConfigError on invalid input. */
 export function loadServerConfig(
   env: Record<string, string | undefined>,
-  defaults: { dataDir: string },
+  defaults: { dataDir?: string } = {},
 ): ServerConfig {
   const raw: Record<string, string | undefined> = {};
   for (const [key, envName] of Object.entries(ENV_KEYS)) raw[key] = envValue(env, envName);

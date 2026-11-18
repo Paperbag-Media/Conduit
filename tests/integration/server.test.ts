@@ -1,14 +1,12 @@
 import http from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { healthResponseSchema, serverMessageSchema } from '@conduit/shared';
-import { createHarness, DASHBOARD_ORIGIN, openSocket, setupOwner, upgradeStatus, type Harness } from '../helpers/harness';
+import { healthResponseSchema } from '@conduit/shared';
+import { createHarness, DASHBOARD_ORIGIN, LOCAL_KEY, upgradeStatus, type Harness } from '../helpers/harness';
 
 let h: Harness;
-let token: string;
 
 beforeAll(async () => {
   h = await createHarness();
-  token = (await setupOwner(h)).token;
 });
 
 afterAll(async () => {
@@ -37,7 +35,7 @@ describe('HTTP API baseline', () => {
     const res = await rawRequest('/api/health');
     expect(res.status).toBe(200);
     const body = healthResponseSchema.parse(JSON.parse(res.body));
-    expect(body).toMatchObject({ status: 'ok', version: '9.9.9-test', database: { ok: true, schemaVersion: 32 } });
+    expect(body).toMatchObject({ status: 'ok', version: '9.9.9-test', database: { ok: true, schemaVersion: 33 } });
     expect(Object.keys(body).sort()).toEqual(['database', 'status', 'time', 'uptimeSeconds', 'version']);
     expect(res.headers['x-powered-by']).toBeUndefined();
     expect(res.headers['x-content-type-options']).toBe('nosniff');
@@ -64,8 +62,8 @@ describe('HTTP API baseline', () => {
     expect(res.headers['access-control-allow-origin']).toBe(DASHBOARD_ORIGIN);
   });
 
-  it('refuses other browser origins, even with a valid session', async () => {
-    const res = await rawRequest('/api/profiles', { Origin: 'https://evil.example', Authorization: `Bearer ${token}` });
+  it('refuses other browser origins, even with the local access key', async () => {
+    const res = await rawRequest('/api/connections', { Origin: 'https://evil.example', 'X-CONDUIT-Local-Key': LOCAL_KEY });
     expect(res.status).toBe(403);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
@@ -76,33 +74,14 @@ describe('HTTP API baseline', () => {
   });
 });
 
-describe('WebSocket baseline', () => {
-  it('greets an authenticated client with hello', async () => {
-    const socket = await openSocket(h, token, { origin: DASHBOARD_ORIGIN });
-    socket.ws.close();
-  });
-
-  it('identifies the user from the session in hello', async () => {
-    const socket = await openSocket(h, token);
-    socket.ws.close();
-    const session = await h.call('GET', '/api/auth/session', { token });
-    expect(serverMessageSchema.parse(socket.hello)).toMatchObject({ type: 'hello', version: '9.9.9-test', userId: session.body.user.id });
-  });
-
-  it('rejects connections from a foreign browser origin, even with a token', async () => {
-    expect(await upgradeStatus(h, { origin: 'https://evil.example', headers: { Authorization: `Bearer ${token}` } })).toBe(403);
-  });
-
-  it('rejects connections without a session', async () => {
-    expect(await upgradeStatus(h, { origin: DASHBOARD_ORIGIN })).toBe(401);
-    expect(await upgradeStatus(h, {})).toBe(401);
-  });
-
-  it('rejects non-loopback Host headers', async () => {
-    expect(await upgradeStatus(h, { headers: { Host: 'attacker.example', Authorization: `Bearer ${token}` } })).toBe(403);
-  });
-
-  it('rejects unknown upgrade paths', async () => {
-    expect(await upgradeStatus(h, { headers: { Authorization: `Bearer ${token}` } }, '/other')).toBe(404);
+describe('no WebSocket endpoint', () => {
+  it('never upgrades a connection, from the dashboard origin, another origin or another host', async () => {
+    for (const options of [{ origin: DASHBOARD_ORIGIN }, { origin: 'https://evil.example' }, { headers: { Host: 'attacker.example' } }, {}]) {
+      expect(await upgradeStatus(h, options)).not.toBe(101);
+      expect(await upgradeStatus(h, options, '/other')).not.toBe(101);
+    }
+    // An upgrade request is an ordinary request here, so the same guards answer it: Host check first, then not found.
+    expect(await upgradeStatus(h, { headers: { Host: 'attacker.example' } })).toBe(403);
+    expect(await upgradeStatus(h, {})).toBe(404);
   });
 });

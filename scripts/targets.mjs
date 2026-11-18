@@ -8,13 +8,12 @@ const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 export const version = pkg.version;
 
 export const desktopDist = path.join(root, 'apps/desktop/dist');
-export const serverDist = path.join(root, 'apps/server/dist');
 
 const common = {
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  // Electron 44 bundles Node 24; standalone server mode requires Node >= 24.7.
+  // Electron 44 bundles Node 24.
   target: 'node24',
   sourcemap: 'linked',
   logLevel: 'warning',
@@ -47,16 +46,5 @@ export const desktopTargets = {
     // Optional native accelerators for `ws`; it falls back to pure JS without them.
     external: ['bufferutil', 'utf-8-validate'],
   },
-  /** Offline administrator recovery, launched by `CONDUIT.exe --recover-admin`. */
-  recoverAdmin: {
-    ...common,
-    entryPoints: [path.join(root, 'apps/server/src/recover-admin-cli.ts')],
-    outfile: path.join(desktopDist, 'recover-admin.cjs'),
-  },
 };
 
-/** Standalone bundles for plain Node.js (`npm run server`, `npm run recover-admin`, future VPS hosting). */
-export const standaloneTargets = [
-  { ...desktopTargets.server, outfile: path.join(serverDist, 'server.cjs') },
-  { ...desktopTargets.recoverAdmin, outfile: path.join(serverDist, 'recover-admin.cjs') },
-];

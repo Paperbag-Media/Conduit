@@ -5,7 +5,7 @@ import * as esbuild from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { versionProblems } from './release.mjs';
 import { edition } from './edition.mjs';
-import { desktopDist, desktopTargets, root, serverDist, standaloneTargets, version } from './targets.mjs';
+import { desktopDist, desktopTargets, root, version } from './targets.mjs';
 
 // The app, the installer (apps/desktop/package.json) and the lockfile must all carry the same version.
 const problems = versionProblems();
@@ -16,7 +16,6 @@ if (problems.length) {
 
 const started = Date.now();
 rmSync(desktopDist, { recursive: true, force: true });
-rmSync(serverDist, { recursive: true, force: true });
 
 console.log(`Building ${edition.productName} ${version}`);
 await viteBuild({
@@ -27,7 +26,7 @@ await viteBuild({
 console.log('  ✓ renderer');
 
 await Promise.all(
-  [...Object.values(desktopTargets), ...standaloneTargets].map((target) => esbuild.build({ ...target, minify: true })),
+  Object.values(desktopTargets).map((target) => esbuild.build({ ...target, minify: true })),
 );
-console.log('  ✓ main, preload, server, recover-admin');
+console.log('  ✓ main, preload, server');
 console.log(`Done in ${((Date.now() - started) / 1000).toFixed(1)}s`);

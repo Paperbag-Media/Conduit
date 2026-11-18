@@ -32,7 +32,7 @@ export const saveDiscordApplicationSchema = z.strictObject({
   clientSecret: clientSecret.optional(),
   botToken: botToken.optional(),
 });
-export type SaveDiscordApplicationRequest = z.input<typeof saveDiscordApplicationSchema>;
+
 
 export type DiscordSetupStep = 'application' | 'account' | 'install' | 'bot' | 'done';
 

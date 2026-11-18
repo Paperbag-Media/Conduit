@@ -15,7 +15,7 @@ import { FileCredentialVault, handleVaultRequest } from './credential-vault';
 import { connectRequestSchema, validateApiRequest, validateControlsColor, validateKickClipUrl } from './ipc-validation';
 import { LocalApiClient } from './local-api';
 import { discordPortalUrl, KICK_DEVELOPER_SETTINGS_URL, TWITCH_DEVELOPER_CONSOLE_URL, validateAuthorizationUrl, validateBotInstallUrl } from './oauth-launch';
-import { isRecoveryInvocation, refuseRecoveryWhileRunning, runRecoveryMode } from './recovery-mode';
+
 import { buildContentSecurityPolicy, isPermissionAllowed, isTrustedRendererUrl, mimeTypeFor, resolveRendererPath } from './renderer-security';
 
 const edition = __CONDUIT_EDITION__;
@@ -68,8 +68,6 @@ function startDesktop(dataDir: string): void {
    * process started below, never with the renderer, and never written to disk or logged.
    */
   const localKey = crypto.randomBytes(32).toString('base64url');
-  /** The dormant account setup endpoint still needs a token; nobody receives this one. */
-  const setupToken = crypto.randomBytes(32).toString('base64url');
 
   const logger: Logger = createLogger({
     name: 'desktop',
@@ -164,7 +162,6 @@ function startDesktop(dataDir: string): void {
       CONDUIT_LOG_LEVEL: app.isPackaged ? 'info' : 'debug',
       CONDUIT_LOG_CONSOLE: app.isPackaged ? 'false' : 'true',
       CONDUIT_ALLOWED_ORIGINS: [APP_ORIGIN, ...(devServerOrigin ? [devServerOrigin] : [])].join(','),
-      CONDUIT_SETUP_TOKEN: setupToken,
       CONDUIT_LOCAL_KEY: localKey,
     },
     onStatus: (status: BackendStatus) => sendToRenderer(IPC_CHANNELS.backendStatusChanged, status),
@@ -381,20 +378,6 @@ function startDesktop(dataDir: string): void {
 app.setName(PRODUCT_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), edition.dataFolder));
 
-// The single-instance lock comes first: it keeps two launches from racing the data-folder migration, and in
-// recovery mode it proves CONDUIT is not running.
-const recovery = isRecoveryInvocation(process.argv);
-if (!app.requestSingleInstanceLock()) {
-  if (recovery) void refuseRecoveryWhileRunning().finally(() => app.exit(1));
-  else app.quit();
-} else if (recovery) {
-  void app.whenReady().then(async () => {
-    const code = await runRecoveryMode(process.argv, resolveDesktopDataDir()).catch((err: unknown) => {
-      process.stdout.write(`Recovery failed: ${err instanceof Error ? err.message : String(err)}\n`);
-      return 1;
-    });
-    app.exit(code);
-  });
-} else {
-  startDesktop(resolveDesktopDataDir());
-}
+// The single-instance lock comes first: it keeps two launches from racing the data-folder migration.
+if (!app.requestSingleInstanceLock()) app.quit();
+else startDesktop(resolveDesktopDataDir());

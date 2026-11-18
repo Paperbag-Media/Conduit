@@ -9,7 +9,7 @@ import type { DisconnectResult, PlatformConnectionSummary } from '@conduit/share
 import { DiscordAdapter } from '../../apps/server/src/discord/discord';
 import { MemoryVault } from '../../apps/server/src/app/vault';
 import { CLIENT_ID, CLIENT_SECRET, FakeDiscord } from '../helpers/fake-discord';
-import { auditActions, createHarness, setupOwner, type Harness } from '../helpers/harness';
+import { auditActions, createHarness, type Harness } from '../helpers/harness';
 
 let h: Harness;
 let discord: FakeDiscord;
@@ -264,16 +264,6 @@ describe('Discord connection (mocked Discord)', () => {
     }
     expect(log).toContain('platform connected');
   });
-
-  it('leaves the dormant account and profile data untouched', async () => {
-    const owner = await setupOwner(h);
-    const snapshot = () => JSON.stringify(['users', 'sessions', 'streamer_profiles', 'profile_memberships'].map((t) => h.db.prepare(`SELECT * FROM ${t}`).all()));
-    const before = snapshot();
-    await approve(await start());
-    await h.call('POST', '/api/connections/discord/disconnect');
-    expect(snapshot()).toBe(before);
-    expect(owner.user.username).toBe('owner');
-  });
 });
 
 describe('Discord not configured / no secure storage', () => {
@@ -286,11 +276,11 @@ describe('Discord not configured / no secure storage', () => {
     expect(res.body.error).toMatchObject({ code: 'not_configured', message: expect.stringContaining('Select Connect to start the setup') });
   });
 
-  it('refuses to connect without OS-backed credential storage (standalone server)', async () => {
+  it('refuses to connect without OS-backed credential storage', async () => {
     await h.close();
     discord = new FakeDiscord();
     h = await createHarness({}, { adapters: { discord: new DiscordAdapter({ credentials: async () => ({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), version: '1', fetch: discord.fetch }) } });
-    expect((await card()).unavailableReason).toMatch(/Secure credential storage needs the CONDUIT desktop app/);
+    expect((await card()).unavailableReason).toMatch(/Secure credential storage \(Windows DPAPI\) isn’t available/);
     expect((await h.call('POST', '/api/connections/discord/connect')).status).toBe(503);
   });
 });

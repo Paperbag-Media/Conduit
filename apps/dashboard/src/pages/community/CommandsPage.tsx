@@ -27,7 +27,7 @@ import { api, ApiClientError, errorMessage } from '../../api';
 import { BrowserTabs } from '../../components/BrowserTabs';
 import { DiscordMarkdown } from '../../components/discord/DiscordMarkdown';
 import { Button, ErrorBanner, fieldError, issuesToFieldErrors, Loading } from '../../components/forms';
-import { PlatformIcon } from '../../components/PlatformIcon';
+import { PageTabs, streamTabs, useRememberedTab } from '../../components/PageTabs';
 import { useAsync, useBackendStatus, usePolling } from '../../hooks';
 
 const POLL_MS = 4000;
@@ -46,33 +46,21 @@ const OUTCOME_TONE: Record<NonNullable<CustomCommandView['lastRun']>['outcome'],
   blocked: 'muted',
 };
 
-/** Commands: one place for Discord, Kick and Twitch commands — built-in (default) and your own (custom). */
-export function CommandsPage() {
-  const [platform, setPlatform] = useState<CommandPlatform>('discord');
+const STREAM_TABS = streamTabs(['kick', 'twitch']);
+
+/** Streaming → Commands: Kick and Twitch chat commands — built-in (default) and your own (custom). */
+export function StreamCommandsPage() {
+  const [platform, setPlatform] = useRememberedTab('conduit.commandsTab', STREAM_TABS);
   return (
-    <div className="stack">
-      <div className="platform-tabs" role="tablist" aria-label="Platform">
-        {(['discord', 'kick', 'twitch'] as const).map((p) => (
-          <button
-            key={p}
-            type="button"
-            role="tab"
-            id={`commands-tab-${p}`}
-            aria-selected={platform === p}
-            aria-controls={`commands-panel-${p}`}
-            className={`platform-tab${platform === p ? ' active' : ''}`}
-            onClick={() => setPlatform(p)}
-          >
-            <PlatformIcon platform={p} size={16} />
-            {PLATFORM_LABEL[p]}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel" id={`commands-panel-${platform}`} aria-labelledby={`commands-tab-${platform}`}>
-        {platform === 'discord' ? <DiscordCommands /> : <PlatformCommands key={platform} platform={platform} />}
-      </div>
-    </div>
+    <PageTabs id="commands" label="Platform" tabs={STREAM_TABS} active={platform} onChange={setPlatform}>
+      {platform !== 'youtube' && <PlatformCommands key={platform} platform={platform} />}
+    </PageTabs>
   );
+}
+
+/** Discord → Commands: the bot's slash commands — built-in (default) and your own (custom). */
+export function DiscordCommandsPage() {
+  return <DiscordCommands />;
 }
 
 function PlatformCommands({ platform }: { platform: CommandPlatform }) {

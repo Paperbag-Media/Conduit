@@ -11,7 +11,7 @@ export {
   type SqlParam,
   type SqlParams,
 } from './sqlite';
-export { DATABASE_FILE, defaultDataDirectory } from './data-dir';
+export { DATABASE_FILE } from './data-dir';
 export {
   applyPendingRestore,
   checkDatabaseFile,
@@ -66,15 +66,7 @@ export {
 } from './repositories/giveaways';
 export { discordRepo, type DiscordApplicationRecord, type DiscordGuildRecord } from './repositories/discord';
 export { auditRepo, type AuditEntry, type AuditOutcome, type AuditRecord } from './repositories/audit';
-export {
-  profilesRepo,
-  type MemberRecord,
-  type MembershipRole,
-  type ProfilePatch,
-  type ProfileRecord,
-  type ProfileRole,
-  type ProfileWithRole,
-} from './repositories/profiles';
+
 export {
   logEventsRepo,
   notifiersRepo,
@@ -106,6 +98,6 @@ export {
   type LoyaltyXpEventRecord,
 } from './repositories/loyalty-levels';
 export { moderationRepo, type ModerationRecord, type ModerationRuleName } from './repositories/moderation';
-export { sessionsRepo, type SessionRecord } from './repositories/sessions';
+
 export { SETTING_KEYS, settingsRepo } from './repositories/settings';
-export { usersRepo, type SystemRole, type UserRecord, type UserStatus } from './repositories/users';
+

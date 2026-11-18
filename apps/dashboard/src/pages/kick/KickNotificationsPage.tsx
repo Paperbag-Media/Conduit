@@ -42,12 +42,7 @@ const PLATFORM = {
   twitch: { name: 'Twitch', site: 'twitch.tv', url: (slug: string) => `https://www.twitch.tv/${slug}`, strip: /^https?:\/\/(www\.|m\.)?twitch\.tv\//i, placeholder: 'channel name or twitch.tv link' },
 } satisfies Record<NotificationPlatform, { name: string; site: string; url: (slug: string) => string; strip: RegExp; placeholder: string }>;
 
-/** Kick Notifications: announce in Discord when Kick streamers go live. */
-export function KickNotificationsPage() {
-  return <StreamNotificationsPage platform="kick" />;
-}
-
-/** One platform's notifications page (Kick Notifications, Twitch Notifications). */
+/** One platform's tab of Streaming → Notifications. */
 export function StreamNotificationsPage({ platform }: { platform: NotificationPlatform }) {
   const backend = useBackendStatus();
   const { data, error, reload } = useAsync(() => api<StreamNotificationsState>('GET', '/api/notifications'), [backend?.state === 'running']);

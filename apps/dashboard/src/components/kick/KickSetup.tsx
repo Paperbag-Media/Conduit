@@ -144,6 +144,11 @@ export function KickCard({ state: s, busy, actionError, actionNotice, onOpen, on
           {p.problem ?? b.problem}
         </p>
       )}
+      {!pending && !p.problem && s.chat.receive.warning && (
+        <p className="connection-note note-warn" role="status">
+          {s.chat.receive.warning}
+        </p>
+      )}
       {actionError && (
         <p className="connection-note note-error" role="alert">
           {actionError}
@@ -639,6 +644,11 @@ function KickChatSection({ s, onChanged }: { s: KickSetupState; onChanged: () =>
           {r.problem}
         </p>
       )}
+      {r.warning && (
+        <p className="connection-note note-warn" role="status">
+          {r.warning}
+        </p>
+      )}
       {r.rejected > 0 && (
         <p className="connection-note note-warn" role="status">
           {r.rejected} delivery attempt{r.rejected === 1 ? ' was' : 's were'} refused (not signed by Kick, too old or malformed).
@@ -652,7 +662,11 @@ function KickChatSection({ s, onChanged }: { s: KickSetupState; onChanged: () =>
         )}
         {r.status !== 'connecting' && r.status !== 'permission_required' && (
           <Button variant="secondary" busy={action.busy} onClick={() => void action.run(() => api('POST', '/api/kick/chat/retry'))}>
-            {r.status === 'error' || r.status === 'reconnecting' ? 'Retry' : 'Check subscription'}
+            {r.status === 'error' || r.status === 'reconnecting'
+              ? 'Retry'
+              : r.status === 'connected' && (r.delivery !== 'confirmed' || r.warning)
+                ? 'Renew subscription'
+                : 'Check subscription'}
           </Button>
         )}
       </div>

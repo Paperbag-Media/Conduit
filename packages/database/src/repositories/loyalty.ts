@@ -190,14 +190,11 @@ export const loyaltyRepo = {
     );
   },
 
-  /** Discord points totals, pending redemptions, and any older Kick balances (kept as history, no longer used). */
-  stats(db: Database): { viewers: number; outstanding: number; pending: number; legacyKick: { accounts: number; points: number } } {
-    const totals = (platform: LoyaltyPlatform) =>
-      queryOne<{ n: number; points: number | null }>(db, 'SELECT COUNT(*) AS n, SUM(balance) AS points FROM loyalty_accounts WHERE platform = ?', platform);
-    const discord = totals('discord');
-    const kick = totals('kick');
+  /** Discord points totals and pending redemptions. Older Kick balances are kept as history and aren't counted. */
+  stats(db: Database): { viewers: number; outstanding: number; pending: number } {
+    const discord = queryOne<{ n: number; points: number | null }>(db, "SELECT COUNT(*) AS n, SUM(balance) AS points FROM loyalty_accounts WHERE platform = 'discord'");
     const pending = queryOne<{ n: number }>(db, "SELECT COUNT(*) AS n FROM loyalty_redemptions WHERE status = 'pending'")?.n ?? 0;
-    return { viewers: discord?.n ?? 0, outstanding: discord?.points ?? 0, pending, legacyKick: { accounts: kick?.n ?? 0, points: kick?.points ?? 0 } };
+    return { viewers: discord?.n ?? 0, outstanding: discord?.points ?? 0, pending };
   },
 
   // ── rewards ──

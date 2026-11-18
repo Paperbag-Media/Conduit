@@ -129,7 +129,7 @@ export function TwitchCard({ state: s, busy, actionError, actionNotice, onOpen, 
       )}
       {!pending && !p.problem && needsPermissions && (
         <p className="connection-note note-warn" role="status">
-          Reconnect your Twitch account to allow every command and Twitch Moderation.
+          Reconnect your Twitch account to allow every command and Twitch moderation.
         </p>
       )}
       {actionError && (

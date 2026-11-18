@@ -26,7 +26,7 @@ const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '
 
 const state = (over: Partial<LoyaltyState> = {}): LoyaltyState => ({
   settings: DEFAULT_LOYALTY_SETTINGS,
-  stats: { viewers: 0, outstanding: 0, pending: 0, members: 0, totalXp: 0, legacyKick: { accounts: 0, points: 0 } },
+  stats: { viewers: 0, outstanding: 0, pending: 0, members: 0, totalXp: 0 },
   guilds: [{ id: '42', name: 'Retro Server', members: 0 }],
   rewards: [],
   roleRewards: [],
@@ -53,7 +53,7 @@ describe('Loyalty & Rewards page', () => {
         <LoyaltyView
           s={state({
             settings: { ...DEFAULT_LOYALTY_SETTINGS, enabled: true },
-            stats: { viewers: 3, outstanding: 1234, pending: 1, members: 7, totalXp: 98765, legacyKick: { accounts: 2, points: 40 } },
+            stats: { viewers: 3, outstanding: 1234, pending: 1, members: 7, totalXp: 98765 },
             problems: [{ at: '2026-01-01T12:00:00.000Z', detail: 'Level 3 role for alice wasn’t given: Discord refused' }],
           })}
         />,

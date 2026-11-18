@@ -209,13 +209,30 @@ describe('Start Giveaway (no drafts)', () => {
       status: 'open',
       winnerCount: 2,
       durationMinutes: 10,
-      platforms: ['kick', 'discord'],
+      platforms: ['kick'],
       startedAt: '2026-10-11T18:00:00.000Z',
       endsAt: '2026-10-11T18:10:00.000Z',
       entryCount: 0,
       ticketCount: 0,
     });
     expect(fail(() => svc.startGiveaway(g.id)).code).toBe('conflict'); // no second Start
+  });
+
+  it('Discord and stream giveaways are separate: one of each can run at once, and they never mix', () => {
+    const stream = opened({ platforms: ['kick', 'twitch'] });
+    expect(fail(() => opened({ prize: 'Another', platforms: ['kick'] })).code).toBe('conflict');
+    const discord = opened({ prize: 'Nitro', platforms: ['discord'] });
+    expect(fail(() => opened({ prize: 'Another', platforms: ['discord'] })).code).toBe('conflict');
+    // Chat enters the stream giveaway, the button the Discord one.
+    expect(svc.enter('kick', viewer(1))).toMatchObject({ outcome: 'entered', prize: 'Steam key' });
+    expect(svc.enter('discord', viewer(1))).toMatchObject({ outcome: 'entered', prize: 'Nitro' });
+    expect(svc.get(stream.id).entriesByPlatform).toEqual({ kick: 1, twitch: 0, discord: 0 });
+    expect(svc.get(discord.id).entriesByPlatform).toEqual({ kick: 0, twitch: 0, discord: 1 });
+    // Discord can't be added to a stream giveaway, or a stream platform to a Discord one.
+    const mixed = fail(() => svc.create({ prize: 'p', platforms: ['kick', 'discord'] }));
+    expect(mixed.code).toBe('validation_error');
+    expect(JSON.stringify(mixed)).toContain('Discord giveaways are separate');
+    expect(fail(() => svc.update(discord.id, { platforms: ['twitch'] })).code).toBe('validation_error');
   });
 
   it('validates fields with the shared rules', () => {
@@ -258,7 +275,7 @@ describe('Start Giveaway (no drafts)', () => {
     rewards.failCreate = true;
     const err = await failAsync(svc.createAndStart({ prize: 'Again', platforms: ['kick'], kickReward: { title: 'Bonus', cost: 5, tickets: 1 } }));
     expect(err.message).toMatch(/^Not started: Kick couldn’t create the Channel Points reward/);
-    expect(giveawaysRepo.findOpen(db)).toBeUndefined();
+    expect(giveawaysRepo.findOpen(db, 'stream')).toBeUndefined();
     expect(rows('giveaways')).toBe(0);
   });
 
@@ -327,8 +344,10 @@ describe('entries', () => {
     expect(svc.enter('kick', { id: '1', name: 'Alice' })).toMatchObject({ outcome: 'entered' });
     expect(svc.enter('kick', { id: '1', name: 'Alice2' })).toEqual({ outcome: 'already_entered', prize: 'Steam key' });
     expect(svc.enter('kick', { id: '2', name: 'Alice' }).outcome).toBe('entered');
+    expect(svc.get(g.id)).toMatchObject({ entryCount: 2, entriesByPlatform: { kick: 2, discord: 0 }, ticketCount: 2 });
+    const d = opened({ prize: 'Nitro', platforms: ['discord'] });
     expect(svc.enter('discord', { id: '1', name: 'Alice' }).outcome).toBe('entered');
-    expect(svc.get(g.id)).toMatchObject({ entryCount: 3, entriesByPlatform: { kick: 2, discord: 1 }, ticketCount: 3 });
+    expect(svc.get(d.id)).toMatchObject({ entryCount: 1, entriesByPlatform: { kick: 0, discord: 1 }, ticketCount: 1 });
   });
 
   it('is idempotent at the database level too (concurrent duplicates add nothing)', () => {
@@ -342,8 +361,10 @@ describe('entries', () => {
   it('checks that a giveaway is running, accepts the platform, and the entrant is eligible', () => {
     expect(svc.enter('kick', viewer(1))).toEqual({ outcome: 'no_giveaway' });
     opened({ platforms: ['discord'] });
-    expect(svc.enter('kick', viewer(1))).toMatchObject({ outcome: 'platform_not_allowed', platforms: ['discord'] });
+    expect(svc.enter('kick', viewer(1))).toEqual({ outcome: 'no_giveaway' }); // a Discord giveaway isn't entered from chat
     expect(svc.enter('discord', viewer(1)).outcome).toBe('entered');
+    opened({ prize: 'Twitch only', platforms: ['twitch'] });
+    expect(svc.enter('kick', viewer(1))).toMatchObject({ outcome: 'platform_not_allowed', platforms: ['twitch'] });
   });
 
   it('the streamer’s own accounts and the chatbot can’t enter', () => {
@@ -419,14 +440,13 @@ describe('active-subscriber multiplier', () => {
     expect(svc.get(g.id)).toMatchObject({ ticketCount: 4, verifiedSubscribers: 1 });
   });
 
-  it('never applies to Discord entrants, and is off (1×) unless configured', () => {
+  it('is off (1×) unless configured, and never applies to Discord giveaways', () => {
     const off = opened();
     chat.say('!enter', viewer(1), { badges: ['subscriber'] });
+    expect(svc.ticketLines(giveawaysRepo.get(db, off.id)!).map((l) => [l.platform, l.weight])).toEqual([['kick', 1]]);
+    const discord = opened({ prize: 'Nitro', platforms: ['discord'] });
     svc.enter('discord', viewer(2));
-    expect(svc.ticketLines(giveawaysRepo.get(db, off.id)!).map((l) => [l.platform, l.weight])).toEqual([
-      ['kick', 1],
-      ['discord', 1],
-    ]);
+    expect(svc.ticketLines(giveawaysRepo.get(db, discord.id)!).map((l) => [l.platform, l.weight])).toEqual([['discord', 1]]);
   });
 });
 
@@ -684,14 +704,14 @@ describe('public messages', () => {
   it('announce the start (with the reward), a timely close and the winners: names and prize only', async () => {
     const g = opened({ winnerCount: 2, durationMinutes: 10 });
     svc.enter('kick', { id: '1', name: 'alice' });
-    svc.enter('discord', { id: '2', name: 'bob' });
+    svc.enter('kick', { id: '2', name: 'bob' });
     ms += 10 * 60_000 + 1000;
     svc.closeOverdue();
     svc.draw(g.id);
     await svc.idle();
-    expect(chat.sent[0]).toBe('🎉 I’ve started a giveaway for Steam key! To enter, type !enter in chat or click Enter Giveaway on the Discord announcement. 2 winners. Entries close in 10 minutes.');
+    expect(chat.sent[0]).toBe('🎉 I’ve started a giveaway for Steam key! To enter, type !enter in chat. 2 winners. Entries close in 10 minutes.');
     expect(chat.sent[1]).toBe('Entries for Steam key are now closed. Winners will be drawn soon.');
-    expect(chat.sent[2]).toMatch(/^🏆 Winners of Steam key: (@alice, bob \(Discord\)|bob \(Discord\), @alice)\. Congratulations!$/);
+    expect(chat.sent[2]).toMatch(/^🏆 Winners of Steam key: (@alice, @bob|@bob, @alice)\. Congratulations!$/);
   });
 
   it('never expose ticket counts, totals, odds or entrant lists', async () => {
@@ -739,7 +759,7 @@ describe('migrations 13 and 14 keep existing giveaways working', () => {
     old.exec(`INSERT INTO giveaway_entries (giveaway_id, platform, platform_user_id, display_name, entered_at)
               VALUES ('g1', 'discord', '900000000000000001', 'fan', 't')`);
     old.exec(`INSERT INTO giveaway_draws (id, giveaway_id, kind, drawn_at, pool_size) VALUES ('d1', 'g1', 'initial', 't', 1)`);
-    expect(migrate(old, migrations)).toEqual({ applied: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32], currentVersion: 32 });
+    expect(migrate(old, migrations)).toEqual({ applied: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33], currentVersion: 33 });
     expect(giveawaysRepo.get(old, 'g1')).toMatchObject({ prize: 'Steam key', subscriberMultiplier: 1, kickRewardCost: null, discordMessageId: null });
     expect(giveawaysRepo.entries(old, 'g1')).toEqual([expect.objectContaining({ source: null, subscriberVerified: false, subscriberEvidence: null })]);
     expect(giveawaysRepo.draws(old, 'g1')[0]!.ticketSnapshot).toBeNull();

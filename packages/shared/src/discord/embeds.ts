@@ -90,16 +90,6 @@ export const discordMessageSchema = z
   .refine((m) => m.content.trim() !== '' || m.embed !== null, 'Add message text or an embed');
 export type DiscordMessageInput = z.output<typeof discordMessageSchema>;
 
-/** Placeholders used in any text or URL field. */
-export function templateVariables(m: { content?: string; embed?: DiscordEmbed | null }): string[] {
-  const parts = [m.content ?? ''];
-  if (m.embed) {
-    const e = m.embed;
-    parts.push(e.authorName, e.authorIconUrl, e.authorUrl, e.title, e.url, e.description, e.thumbnailUrl, e.imageUrl, e.footerText, e.footerIconUrl);
-    for (const f of e.fields) parts.push(f.name, f.value);
-  }
-  return [...new Set(parts.flatMap((p) => [...p.matchAll(/\{([a-z_]+)\}/gi)].map((x) => x[1]!.toLowerCase())))];
-}
 
 /**
  * Fills {variables} (single pass; unknown ones stay as written). Variable names are lowercase; a differently

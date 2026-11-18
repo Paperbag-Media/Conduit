@@ -26,7 +26,7 @@ export const saveKickApplicationSchema = z.strictObject({
     .regex(/^\S+$/, 'A Client Secret contains no spaces')
     .optional(),
 });
-export type SaveKickApplicationRequest = z.input<typeof saveKickApplicationSchema>;
+
 
 export const KICK_CHATBOT_MODES = ['primary', 'separate'] as const;
 export type KickChatbotMode = (typeof KICK_CHATBOT_MODES)[number];
@@ -74,6 +74,11 @@ export interface KickChatState {
     /** 'confirmed' once a correctly signed message from Kick has arrived; until then the tunnel is unproven. */
     delivery: 'unconfirmed' | 'confirmed';
     problem: string | null;
+    /**
+     * While connected: the main channel is live but Kick has delivered nothing for a while (the tunnel may be down or
+     * the Kick app's webhook URL wrong). Clears as soon as anything arrives.
+     */
+    warning: string | null;
     /** Where your tunnel must forward to (this PC only), and the path to append to the tunnel's public URL. */
     localTarget: string;
     webhookPath: string;

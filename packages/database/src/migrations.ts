@@ -30,6 +30,7 @@ import { KICK_MODERATION_MIGRATION_SQL } from './migrations/029-kick-moderation'
 import { TWITCH_COMMANDS_MIGRATION_SQL } from './migrations/030-twitch-commands';
 import { GIVEAWAY_TWITCH_MIGRATION_SQL } from './migrations/031-giveaway-twitch';
 import { TWITCH_MODERATION_MIGRATION_SQL } from './migrations/032-twitch-moderation';
+import { GIVEAWAY_SIDES_MIGRATION_SQL } from './migrations/033-giveaway-sides';
 
 /**
  * The application's schema history. Append new migrations; never edit or reorder released ones
@@ -80,4 +81,5 @@ export const migrations: readonly Migration[] = [
   { version: 30, name: 'twitch_commands', up: TWITCH_COMMANDS_MIGRATION_SQL },
   { version: 31, name: 'giveaway_twitch', up: GIVEAWAY_TWITCH_MIGRATION_SQL, rebuildsTables: true },
   { version: 32, name: 'twitch_moderation', up: TWITCH_MODERATION_MIGRATION_SQL },
+  { version: 33, name: 'giveaway_sides', up: GIVEAWAY_SIDES_MIGRATION_SQL },
 ];

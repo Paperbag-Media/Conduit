@@ -93,7 +93,7 @@ export const logQuerySchema = z.strictObject({
   search: z.string().trim().max(200).default(''),
   limit: z.number().int().min(1).max(1000).default(300),
 });
-export type LogQuery = z.output<typeof logQuerySchema>;
+
 
 export interface LogEntryView {
   time: string;
